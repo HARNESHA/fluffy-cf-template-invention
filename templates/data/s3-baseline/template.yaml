@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "S3 Baseline - Provisions S3 buckets with encryption, versioning, lifecycle policies, public access blocks, and replication"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Project/system identifier
+
+  EnvironmentName:
+    Type: String
+    AllowedValues: [dev, qa, uat, prod]
+    Description: Deployment environment
+
+  BucketNameSuffix:
+    Type: String
+    Default: "data"
+    Description: Suffix for bucket name (e.g., logs, data, backups)
+
+  EnableVersioning:
+    Type: String
+    AllowedValues: [Yes, No]
+    Default: Yes
+    Description: Enable bucket versioning
+
+  EnableReplication:
+    Type: String
+    AllowedValues: [Yes, No]
+    Default: No
+    Description: Enable cross-region replication
+
+  ReplicationTargetBucket:
+    Type: String
+    Default: ""
+    Description: Target bucket ARN for replication (empty = disabled)
+
+  ExpirationDays:
+    Type: Number
+    Default: 365
+    Description: Object expiration in days
+
+Conditions:
+  UseReplication: !And
+    - !Equals [!Ref EnableReplication, "Yes"]
+    - !Not [!Equals [!Ref ReplicationTargetBucket, ""]]
+
+Resources:
+  # TODO: Implement S3 bucket, encryption, versioning, lifecycle, replication
+
+Outputs:
+  BucketArn:
+    Description: S3 bucket ARN
+    Value: "PLACEHOLDER"
+  BucketName:
+    Description: S3 bucket name
+    Value: "PLACEHOLDER"

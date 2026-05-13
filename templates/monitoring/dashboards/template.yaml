@@ -1,0 +1,37 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudWatch Dashboards - Provisions CloudWatch dashboards and alarms for operational visibility"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Project/system identifier
+
+  EnvironmentName:
+    Type: String
+    AllowedValues: [dev, qa, uat, prod]
+    Description: Deployment environment
+
+  AlarmNotificationEmail:
+    Type: String
+    Default: ""
+    Description: Email for alarm notifications (empty = disabled)
+
+  DashboardNamePrefix:
+    Type: String
+    Default: ""
+    Description: Custom dashboard name prefix (defaults to ProjectName)
+
+Conditions:
+  EnableNotifications: !Not [!Equals [!Ref AlarmNotificationEmail, ""]]
+
+Resources:
+  # TODO: Implement dashboards, alarms, SNS topic
+
+Outputs:
+  DashboardName:
+    Description: CloudWatch dashboard name
+    Value: "PLACEHOLDER"
+  SnsTopicArn:
+    Description: Alarm notification SNS topic
+    Condition: EnableNotifications
+    Value: "PLACEHOLDER"

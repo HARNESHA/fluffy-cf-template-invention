@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "IAM Baseline - Provisions IAM account password policy, roles, instance profiles, and permission boundaries"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Project/system identifier
+
+  EnvironmentName:
+    Type: String
+    AllowedValues: [dev, qa, uat, prod]
+    Description: Deployment environment
+
+  EnablePasswordPolicy:
+    Type: String
+    AllowedValues: [Yes, No]
+    Default: Yes
+    Description: Set IAM account password policy
+
+  MaxPasswordAge:
+    Type: Number
+    Default: 90
+    Description: Maximum password age in days
+    MinValue: 1
+    MaxValue: 1095
+
+  PasswordMinimumLength:
+    Type: Number
+    Default: 14
+    MinValue: 8
+    MaxValue: 128
+    Description: Minimum password length
+
+Conditions:
+  SetPasswordPolicy: !Equals [!Ref EnablePasswordPolicy, "Yes"]
+
+Resources:
+  # TODO: Implement password policy, roles, permission boundaries
+
+Outputs:
+  PermissionBoundaryArn:
+    Description: Permission boundary policy ARN
+    Value: "PLACEHOLDER"

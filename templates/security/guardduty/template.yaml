@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "GuardDuty Baseline - Enables Amazon GuardDuty with S3 protection, findings export to CloudWatch, and automated suppression rules"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Project/system identifier
+
+  EnvironmentName:
+    Type: String
+    AllowedValues: [dev, qa, uat, prod]
+    Description: Deployment environment
+
+  EnableS3Protection:
+    Type: String
+    AllowedValues: [Yes, No]
+    Default: Yes
+    Description: Enable S3 log data protection
+
+  FindingsExportBucketName:
+    Type: String
+    Default: ""
+    Description: S3 bucket for GuardDuty findings export (empty = disabled)
+
+Conditions:
+  ExportFindings: !Not [!Equals [!Ref FindingsExportBucketName, ""]]
+
+Resources:
+  # TODO: Implement GuardDuty detector, S3 protection, findings export
+
+Outputs:
+  DetectorId:
+    Description: GuardDuty detector ID
+    Value: "PLACEHOLDER"

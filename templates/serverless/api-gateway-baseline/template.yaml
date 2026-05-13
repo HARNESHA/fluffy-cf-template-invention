@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "API Gateway Baseline - Provisions REST or HTTP API Gateway with Lambda integration, custom domain, WAF, and throttling"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Project/system identifier
+
+  EnvironmentName:
+    Type: String
+    AllowedValues: [dev, qa, uat, prod]
+    Description: Deployment environment
+
+  ApiName:
+    Type: String
+    Default: ""
+    Description: API name (defaults to ProjectName-EnvironmentName-api)
+
+  ApiType:
+    Type: String
+    Default: REST
+    AllowedValues: [REST, HTTP]
+    Description: API Gateway type
+
+  EnableWAF:
+    Type: String
+    AllowedValues: [Yes, No]
+    Default: Yes
+    Description: Enable WAF ACL for the API
+
+  EnableCaching:
+    Type: String
+    AllowedValues: [Yes, No]
+    Default: No
+    Description: Enable API caching
+
+  ThrottlingRateLimit:
+    Type: Number
+    Default: 10000
+    Description: API throttling rate limit (requests per second)
+
+  ThrottlingBurstLimit:
+    Type: Number
+    Default: 5000
+    Description: API throttling burst limit
+
+Conditions:
+  EnableWAFACL: !Equals [!Ref EnableWAF, "Yes"]
+  EnableAPICaching: !Equals [!Ref EnableCaching, "Yes"]
+
+Resources:
+  # TODO: Implement API Gateway, Lambda integration, WAF, custom domain, usage plan
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: "PLACEHOLDER"
+  ApiId:
+    Description: API Gateway ID
+    Value: "PLACEHOLDER"
