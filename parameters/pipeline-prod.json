@@ -1,0 +1,106 @@
+[
+  {
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "payments-infra"
+  },
+  {
+    "ParameterKey": "PipelineName",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "prod"
+  },
+  {
+    "ParameterKey": "RepositoryName",
+    "ParameterValue": "payments-infra"
+  },
+  {
+    "ParameterKey": "RepositoryAccountId",
+    "ParameterValue": "111122223333"
+  },
+  {
+    "ParameterKey": "RepositoryRegion",
+    "ParameterValue": "us-east-1"
+  },
+  {
+    "ParameterKey": "BranchName",
+    "ParameterValue": "main"
+  },
+  {
+    "ParameterKey": "TerraformDirectory",
+    "ParameterValue": "infrastructure/terraform"
+  },
+  {
+    "ParameterKey": "TerraformVersion",
+    "ParameterValue": "1.10.5"
+  },
+  {
+    "ParameterKey": "BackendBucket",
+    "ParameterValue": "my-org-terraform-state-prod"
+  },
+  {
+    "ParameterKey": "BackendKey",
+    "ParameterValue": "envs/prod/payments-infra/terraform.tfstate"
+  },
+  {
+    "ParameterKey": "BackendRegion",
+    "ParameterValue": "us-east-1"
+  },
+  {
+    "ParameterKey": "EnableApproval",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "PipelineRoleArn",
+    "ParameterValue": "arn:aws:iam::444455556666:role/TerraformPipelineServiceRole"
+  },
+  {
+    "ParameterKey": "CodeBuildRoleArn",
+    "ParameterValue": "arn:aws:iam::444455556666:role/TerraformCodeBuildRole"
+  },
+  {
+    "ParameterKey": "ExecutionRoleArn",
+    "ParameterValue": "arn:aws:iam::444455556666:role/TerraformExecutionRole-prod"
+  },
+  {
+    "ParameterKey": "ArtifactBucket",
+    "ParameterValue": "my-org-codepipeline-artifacts-444455556666"
+  },
+  {
+    "ParameterKey": "BuildImage",
+    "ParameterValue": "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+  },
+  {
+    "ParameterKey": "BuildComputeType",
+    "ParameterValue": "BUILD_GENERAL1_SMALL"
+  },
+  {
+    "ParameterKey": "NotificationEmail",
+    "ParameterValue": "platform-eng@myorg.com"
+  },
+  {
+    "ParameterKey": "EnableEmailNotifications",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "CreateCloudWatchLogs",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "LogRetentionDays",
+    "ParameterValue": "365"
+  },
+  {
+    "ParameterKey": "CostCenter",
+    "ParameterValue": "CC-1042"
+  },
+  {
+    "ParameterKey": "Owner",
+    "ParameterValue": "platform-engineering"
+  },
+  {
+    "ParameterKey": "TeamName",
+    "ParameterValue": "infrastructure"
+  }
+]

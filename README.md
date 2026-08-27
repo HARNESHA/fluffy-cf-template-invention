@@ -1,101 +1,155 @@
-# Global CloudFormation Templates
+# Terraform Pipeline Framework
 
-Enterprise-grade, reusable AWS CloudFormation templates organized by service category. Designed for platform teams, landing zones, and multi-account environments.
+Enterprise-grade, reusable CloudFormation framework for deploying standardized
+Terraform CI/CD pipelines across an AWS Organization via CloudFormation StackSets.
+
+---
+
+## What This Is
+
+One CloudFormation template. Any number of Terraform repositories. Every project
+gets an isolated, fully configured pipeline by passing parameters — no copy-paste,
+no per-project template maintenance.
+
+**Two templates. Two account types. One pipeline per project.**
+
+| Template | Deploys To | Purpose |
+|---|---|---|
+| `templates/terraform-pipeline-framework.yaml` | Pipeline Account | CodePipeline, CodeBuild, EventBridge Bus, SNS, CloudWatch |
+| `templates/codecommit-event-forwarder.yaml` | Repository Accounts | Forwards CodeCommit push events cross-account |
+
+---
 
 ## Repository Structure
 
 ```
-.
-├── templates/                      # CloudFormation templates by category
-│   ├── cicd/                       # CI/CD pipelines
-│   │   └── terraform-pipeline/     # Complete Terraform CI/CD platform
-│   ├── networking/                 # Network infrastructure
-│   │   └── vpc-baseline/           # Multi-AZ VPC (placeholder)
-│   ├── security/                   # Security and compliance
-│   │   ├── guardduty/              # GuardDuty activation (placeholder)
-│   │   ├── security-hub/           # Security Hub standards (placeholder)
-│   │   ├── iam-baseline/           # IAM password policy, roles (placeholder)
-│   │   └── config-baseline/        # AWS Config rules (placeholder)
-│   ├── monitoring/                 # Observability
-│   │   ├── cloudtrail/             # Organization CloudTrail (placeholder)
-│   │   └── dashboards/             # CloudWatch dashboards (placeholder)
-│   ├── data/                       # Data infrastructure
-│   │   ├── s3-baseline/            # Secure S3 buckets (placeholder)
-│   │   └── rds-baseline/           # RDS instances (placeholder)
-│   └── serverless/                 # Serverless infrastructure
-│       └── api-gateway-baseline/   # API Gateway + Lambda (placeholder)
-├── shared/                         # Shared utilities
-│   ├── lint-cfn.sh                 # cfn-lint wrapper
-│   └── deploy-stack.sh             # Generic deploy helper
-├── docs/                           # Documentation
-│   ├── ARCHITECTURE.md             # Architecture overview
-│   ├── CONTRIBUTING.md             # How to contribute
-│   └── TEMPLATE_GUIDE.md           # Template authoring conventions
-├── tests/                          # Validation scripts
-│   ├── lint-all.sh                 # Lint all templates
-│   └── validate-all.sh             # Validate all templates
-└── examples/                       # Usage examples
-    └── deploy-commands.md          # Example deploy commands
+org-stackset-template/
+│
+├── templates/
+│   ├── terraform-pipeline-framework.yaml   # Template 1 — Pipeline Account
+│   └── codecommit-event-forwarder.yaml     # Template 2 — Repository Accounts
+│
+├── buildspec/
+│   ├── buildspec-plan.yml                  # terraform init + validate + plan
+│   └── buildspec-apply.yml                 # terraform apply (saved plan binary)
+│
+├── iam/
+│   ├── trust-pipeline-role.json            # Trust policy for PipelineRole
+│   ├── trust-codebuild-role.json           # Trust policy for CodeBuildRole
+│   ├── trust-execution-role.json           # Trust policy template for ExecutionRole
+│   ├── permissions-pipeline-role.json      # Permissions for PipelineRole
+│   ├── permissions-codebuild-role.json     # Permissions for CodeBuildRole
+│   └── create-iam-roles.sh                # Script to create roles via AWS CLI
+│
+├── parameters/
+│   ├── pipeline-prod.json                  # Template 1 — prod with approval
+│   ├── pipeline-dev.json                   # Template 1 — dev, auto-merge
+│   ├── pipeline-test.json                  # Template 1 — test, auto-merge
+│   ├── forwarder.json                      # Template 2 — event forwarder
+│   ├── stackset-overrides.json             # StackSet parameter overrides
+│   └── eventbridge-event.json             # Example raw CodeCommit event shape
+│
+├── docs/
+│   ├── deployment-guide.md                 # Prerequisites, step-by-step deployment
+│   ├── architecture.md                     # Account topology, event flow, resources
+│   ├── parameter-reference.md              # All parameters, IAM roles, outputs
+│   └── security.md                         # Security controls and recommendations
+│
+└── README.md                               # This file
 ```
 
-## Design Principles
+---
 
-- **Simplicity** - One stack per template. No nested stacks.
-- **Self-contained** - Each template has its own params, scripts, and docs.
-- **Security first** - Least-privilege IAM, encryption, TLS enforcement.
-- **Environment parity** - Parameter files for dev/qa/uat/prod per template.
-- **GitOps ready** - Templates designed for pipeline deployment.
+## Pipeline Behavior
+
+One boolean controls everything. No mode selection required.
+
+| EnableApproval | Pipeline Flow | Use For |
+|---|---|---|
+| `false` | Source → Plan → Apply (auto) | Dev / sandbox — fast automated deploys |
+| `true` | Source → Plan → Approve → Apply | Staging and production — gated deployments |
+
+In both modes, the Apply stage runs `terraform apply tfplan.binary`
+— the exact plan binary produced by the Plan stage. No re-plan occurs.
+
+---
 
 ## Quick Start
 
+### 1. Prerequisites
+
+- Two pre-existing IAM roles in the Pipeline Account:
+  - `PipelineRoleArn` — CodePipeline service role
+  - `CodeBuildRoleArn` — CodeBuild service role (shared by Plan and Apply)
+  - (Optional) `ExecutionRoleArn` — Terraform execution role for infrastructure access
+- S3 bucket for CodePipeline artifacts (Pipeline Account)
+- S3 bucket for Terraform state
+- Buildspec files committed to the target Terraform repository
+
+### 2. Deploy Template 1 — Pipeline Account
+
 ```bash
-# Lint all templates
-./shared/lint-cfn.sh
-
-# Deploy a template
-./shared/deploy-stack.sh \
-    cicd/terraform-pipeline \
-    myproject-dev-tf-pipeline \
-    templates/cicd/terraform-pipeline/parameters/dev.json
-
-# Or directly
 aws cloudformation deploy \
-    --template-file templates/cicd/terraform-pipeline/template.yaml \
-    --stack-name myproject-dev-tf-pipeline \
-    --capabilities CAPABILITY_NAMED_IAM \
-    --parameter-overrides file://templates/cicd/terraform-pipeline/parameters/dev.json
+  --template-file templates/terraform-pipeline-framework.yaml \
+  --stack-name <project>-<env>-tf-pipeline \
+  --parameter-overrides file://parameters/pipeline-prod.json \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1 \
+  --profile pipeline-account
 ```
 
-## Template Categories
+### 3. Capture the Event Bus ARN
 
-| Category | Description |
-|----------|-------------|
-| `cicd/` | CI/CD pipelines (CodePipeline, CodeBuild) for infrastructure deployment |
-| `networking/` | VPC, subnets, routing, connectivity |
-| `security/` | GuardDuty, Security Hub, IAM, Config |
-| `monitoring/` | CloudTrail, dashboards, alerts |
-| `data/` | S3, RDS, backup policies |
-| `serverless/` | API Gateway, Lambda, event-driven patterns |
+```bash
+aws cloudformation describe-stacks \
+  --stack-name <project>-<env>-tf-pipeline \
+  --query "Stacks[0].Outputs[?OutputKey=='EventBusArn'].OutputValue" \
+  --output text --profile pipeline-account
+```
 
-## Available Templates
+Update `parameters/forwarder.json` with the ARN above.
 
-| Template | Status | Description |
-|----------|--------|-------------|
-| `cicd/terraform-pipeline` | Complete | Terraform CI/CD with CodePipeline, CodeBuild, S3 backend, native lockfile |
-| `networking/vpc-baseline` | Placeholder | Multi-AZ VPC with public/private subnets (coming soon) |
-| `security/guardduty` | Placeholder | GuardDuty with S3 protection (coming soon) |
-| `security/security-hub` | Placeholder | Security Hub with CIS/PCI/FSBP standards (coming soon) |
-| `security/iam-baseline` | Placeholder | IAM password policy and permission boundaries (coming soon) |
-| `security/config-baseline` | Placeholder | AWS Config rules and remediation (coming soon) |
-| `monitoring/cloudtrail` | Placeholder | Organization CloudTrail trail (coming soon) |
-| `monitoring/dashboards` | Placeholder | CloudWatch dashboards and alarms (coming soon) |
-| `data/s3-baseline` | Placeholder | Secure S3 with encryption and lifecycle (coming soon) |
-| `data/rds-baseline` | Placeholder | RDS with Multi-AZ and encryption (coming soon) |
-| `serverless/api-gateway-baseline` | Placeholder | API Gateway with Lambda integration (coming soon) |
+### 4. Deploy Template 2 — Repository Account
+
+```bash
+aws cloudformation deploy \
+  --template-file templates/codecommit-event-forwarder.yaml \
+  --stack-name <repo>-<branch>-event-forwarder \
+  --parameter-overrides file://parameters/forwarder.json \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1 \
+  --profile repo-account
+```
+
+### 5. Copy Buildspecs to the Target Repository
+
+| File | Purpose |
+|---|---|
+| `buildspec/buildspec-plan.yml` | Plan stage — runs init, validate, plan |
+| `buildspec/buildspec-apply.yml` | Apply stage — runs apply on saved plan binary |
+
+Commit both to the repository root and push. The pipeline triggers automatically.
+
+---
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) - Repository architecture and design
-- [Contributing](docs/CONTRIBUTING.md) - How to add new templates
-- [Template Guide](docs/TEMPLATE_GUIDE.md) - Conventions for authoring templates
-- [Deployment Examples](examples/deploy-commands.md) - Example deploy commands
+| Document | Contents |
+|---|---|
+| [docs/deployment-guide.md](docs/deployment-guide.md) | Prerequisites, IAM roles, step-by-step deployment, day-2 operations, troubleshooting |
+| [docs/architecture.md](docs/architecture.md) | Account topology, event flow diagram, resources created, conditions logic, artifact paths |
+| [docs/parameter-reference.md](docs/parameter-reference.md) | Every parameter for both templates, IAM role trust policies, stack outputs |
+| [docs/security.md](docs/security.md) | Least-privilege IAM, artifact security, secrets management, pipeline integrity |
+
+---
+
+## Key Design Principles
+
+- **No IAM roles created** — all role ARNs are passed as parameters. Roles are managed separately per organizational standard.
+- **Two IAM roles** — one for CodePipeline (`PipelineRoleArn`), one shared CodeBuild role (`CodeBuildRoleArn`). Optional execution role for infrastructure access.
+- **No hardcoded values** — every project-specific value is a parameter.
+- **Isolated per project** — each stack creates its own Event Bus, pipeline, SNS topic, and log groups. Zero shared state.
+- **Plan binary integrity** — Apply consumes the exact plan binary from the Plan stage. No re-plan between plan and apply.
+- **Event-driven only** — `PollForSourceChanges: false`. Every execution is tied to a specific commit ID passed through EventBridge.
+- **Least privilege forwarding** — Template 2 grants only `events:PutEvents` on the exact target bus ARN. Nothing else.
+- **Simple approval control** — one boolean (`EnableApproval`) determines whether a manual approval gate is inserted between Plan and Apply.

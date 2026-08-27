@@ -1,0 +1,934 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  terraform-pipeline-framework.yaml | Version: 3.0.0
+  Enterprise-grade reusable Terraform CI/CD pipeline framework.
+  Deploys into the Pipeline Account via CloudFormation StackSets.
+  Pipeline always runs: Source -> Plan -> [Optional Approval] -> Apply.
+  EnableApproval controls the approval gate. IAM Roles are NOT created here.
+
+# ==============================================================================
+# METADATA
+# ==============================================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "1. Project Identity"
+        Parameters: [ProjectName, PipelineName, Environment]
+      - Label:
+          default: "2. Source Repository"
+        Parameters: [RepositoryName, RepositoryAccountId, RepositoryRegion, BranchName]
+      - Label:
+          default: "3. Terraform Configuration"
+        Parameters: [TerraformDirectory, TerraformVersion, BackendBucket, BackendKey, BackendRegion]
+      - Label:
+          default: "4. Pipeline Behavior"
+        Parameters: [EnableApproval]
+      - Label:
+          default: "5. IAM Roles (Pre-existing)"
+        Parameters: [PipelineRoleArn, CodeBuildRoleArn, ExecutionRoleArn]
+      - Label:
+          default: "6. Artifacts and Storage"
+        Parameters: [ArtifactBucket]
+      - Label:
+          default: "7. Build Configuration"
+        Parameters: [BuildImage, BuildComputeType]
+      - Label:
+          default: "8. Notifications and Logging"
+        Parameters: [NotificationEmail, EnableEmailNotifications, CreateCloudWatchLogs, LogRetentionDays]
+      - Label:
+          default: "9. Tagging"
+        Parameters: [CostCenter, Owner, TeamName]
+    ParameterLabels:
+      ProjectName:              { default: "Project Name" }
+      PipelineName:             { default: "Pipeline Name (leave blank to auto-generate)" }
+      Environment:              { default: "Environment" }
+      RepositoryName:           { default: "CodeCommit Repository Name" }
+      RepositoryAccountId:      { default: "Repository AWS Account ID" }
+      RepositoryRegion:         { default: "Repository AWS Region" }
+      BranchName:               { default: "Branch to Monitor" }
+      TerraformDirectory:       { default: "Terraform Root Directory (relative)" }
+      TerraformVersion:         { default: "Terraform Version" }
+      BackendBucket:            { default: "Terraform State S3 Bucket" }
+      BackendKey:               { default: "Terraform State S3 Key Path" }
+      BackendRegion:            { default: "Terraform State Backend Region" }
+      EnableApproval:           { default: "Enable Manual Approval Gate (true/false)" }
+      PipelineRoleArn:          { default: "CodePipeline Service Role ARN" }
+      CodeBuildRoleArn:         { default: "CodeBuild Service Role ARN (Plan + Apply)" }
+      ExecutionRoleArn:         { default: "Terraform Execution Role ARN" }
+      ArtifactBucket:           { default: "CodePipeline Artifact S3 Bucket" }
+      BuildImage:               { default: "CodeBuild Build Image URI" }
+      BuildComputeType:         { default: "CodeBuild Compute Type" }
+      NotificationEmail:        { default: "Notification Email Address" }
+      EnableEmailNotifications: { default: "Enable Email Notifications via SNS" }
+      CreateCloudWatchLogs:     { default: "Create CloudWatch Log Groups" }
+      LogRetentionDays:         { default: "Log Retention Period (Days)" }
+      CostCenter:               { default: "Cost Center Tag" }
+      Owner:                    { default: "Owner Tag" }
+      TeamName:                 { default: "Team Name Tag" }
+
+# ==============================================================================
+# PARAMETERS
+# ==============================================================================
+Parameters:
+
+  # ----------------------------------------------------------------------------
+  # Project Identity
+  # ----------------------------------------------------------------------------
+  ProjectName:
+    Type: String
+    Description: >
+      Short lowercase identifier for the project.
+      Used as prefix on all resource names.
+      Example: org--infra
+    AllowedPattern: "^[a-z0-9][a-z0-9\\-]{1,28}[a-z0-9]$"
+    ConstraintDescription: >
+      3-30 lowercase alphanumeric characters and hyphens.
+      Must start and end with alphanumeric character.
+
+  PipelineName:
+    Type: String
+    Description: >
+      Explicit CodePipeline name.
+      Leave blank to auto-generate: {ProjectName}-{Environment}-{BranchName}-tf-pipeline
+    Default: ""
+
+  Environment:
+    Type: String
+    Description: Deployment environment label used in resource naming and tagging.
+    AllowedValues: [dev, test, staging, prod, shared]
+    Default: dev
+
+  # ----------------------------------------------------------------------------
+  # Source Repository
+  # ----------------------------------------------------------------------------
+  RepositoryName:
+    Type: String
+    Description: Name of the CodeCommit repository to source from.
+    AllowedPattern: "^[a-zA-Z0-9._\\-]{1,100}$"
+    ConstraintDescription: Valid CodeCommit repository name.
+
+  RepositoryAccountId:
+    Type: String
+    Description: AWS Account ID where the CodeCommit repository lives.
+    AllowedPattern: "^\\d{12}$"
+    ConstraintDescription: Must be a 12-digit AWS Account ID.
+
+  RepositoryRegion:
+    Type: String
+    Description: AWS Region where the CodeCommit repository resides.
+    Default: us-east-1
+
+  BranchName:
+    Type: String
+    Description: Git branch name to monitor for pipeline triggers.
+    Default: main
+
+  # ----------------------------------------------------------------------------
+  # Terraform Configuration
+  # ----------------------------------------------------------------------------
+  TerraformDirectory:
+    Type: String
+    Description: >
+      Relative path within the repo to the Terraform root module.
+      Use . for repository root.
+    Default: "."
+
+  TerraformVersion:
+    Type: String
+    Description: Terraform CLI version to install in CodeBuild.
+    Default: "1.10.5"
+    AllowedPattern: "^\\d+\\.\\d+\\.\\d+$"
+    ConstraintDescription: Must be a semantic version like 1.10.5
+
+  BackendBucket:
+    Type: String
+    Description: S3 bucket name for Terraform remote state storage.
+
+  BackendKey:
+    Type: String
+    Description: >
+      S3 key path for the Terraform state file.
+      Example: envs/test/terraform.tfstate
+
+  BackendRegion:
+    Type: String
+    Description: AWS Region of the Terraform state S3 bucket.
+    Default: us-east-1
+
+  # ----------------------------------------------------------------------------
+  # Pipeline Behavior
+  # ----------------------------------------------------------------------------
+  EnableApproval:
+    Type: String
+    Description: >
+      Controls whether a Manual Approval stage is inserted between Plan and Apply.
+      true  - Source -> Plan -> Approve -> Apply (use for staging and production)
+      false - Source -> Plan -> Apply (auto-merge, use for dev and sandbox)
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  # ----------------------------------------------------------------------------
+  # IAM Roles (Pre-existing - NOT created by this template)
+  # ----------------------------------------------------------------------------
+  PipelineRoleArn:
+    Type: String
+    Description: >
+      ARN of the pre-existing IAM Role for CodePipeline.
+      Must trust codepipeline.amazonaws.com and events.amazonaws.com.
+    AllowedPattern: "^arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512}$"
+    ConstraintDescription: Must be a valid IAM Role ARN.
+
+  CodeBuildRoleArn:
+    Type: String
+    Description: >
+      ARN of the IAM Role used by both Plan and Apply CodeBuild projects.
+      Must trust codebuild.amazonaws.com.
+    AllowedPattern: "^arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512}$"
+    ConstraintDescription: Must be a valid IAM Role ARN.
+
+  ExecutionRoleArn:
+    Type: String
+    Description: >
+      ARN of the Terraform Execution Role assumed by CodeBuild at runtime.
+      Leave blank if the CodeBuild role has direct infrastructure permissions.
+    AllowedPattern: "^(arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512})?$"
+    Default: ""
+
+  # ----------------------------------------------------------------------------
+  # Artifacts and Storage
+  # ----------------------------------------------------------------------------
+  ArtifactBucket:
+    Type: String
+    Description: >
+      S3 bucket for CodePipeline artifact storage.
+      Must exist in the pipeline account with versioning enabled.
+
+  # ----------------------------------------------------------------------------
+  # Build Configuration
+  # ----------------------------------------------------------------------------
+  BuildImage:
+    Type: String
+    Description: CodeBuild build environment image URI.
+    Default: "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+
+  BuildComputeType:
+    Type: String
+    Description: CodeBuild compute instance type.
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+      - BUILD_GENERAL1_2XLARGE
+    Default: BUILD_GENERAL1_SMALL
+
+  # ----------------------------------------------------------------------------
+  # Notifications and Logging
+  # ----------------------------------------------------------------------------
+  NotificationEmail:
+    Type: String
+    Description: >
+      Email address for SNS pipeline notifications.
+      Required when EnableEmailNotifications is true.
+    Default: ""
+    AllowedPattern: "^(|[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,})$"
+    ConstraintDescription: Must be a valid email address or empty string.
+
+  EnableEmailNotifications:
+    Type: String
+    Description: Create SNS topic and email subscription for pipeline alerts.
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  CreateCloudWatchLogs:
+    Type: String
+    Description: Create CloudWatch Log Groups for CodeBuild projects and pipeline.
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  LogRetentionDays:
+    Type: Number
+    Description: Number of days to retain CloudWatch Logs.
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+    Default: 90
+
+  # ----------------------------------------------------------------------------
+  # Tagging
+  # ----------------------------------------------------------------------------
+  CostCenter:
+    Type: String
+    Description: Cost center code for billing allocation.
+    Default: "unassigned"
+
+  Owner:
+    Type: String
+    Description: Team or individual responsible for this pipeline.
+    Default: "platform-engineering"
+
+  TeamName:
+    Type: String
+    Description: Team name for resource tagging.
+    Default: "infrastructure"
+
+# ==============================================================================
+# CONDITIONS
+# ==============================================================================
+Conditions:
+
+  # Approval stage: inserted between Plan and Apply when enabled
+  CreateApprovalStage: !Equals [!Ref EnableApproval, "true"]
+
+  # Feature flags
+  EnableEmailNotifications: !Equals [!Ref EnableEmailNotifications, "true"]
+  EnableCloudWatch:         !Equals [!Ref CreateCloudWatchLogs, "true"]
+
+  # Pipeline naming
+  UseCustomPipelineName: !Not [!Equals [!Ref PipelineName, ""]]
+
+  # Execution role
+  HasExecutionRole: !Not [!Equals [!Ref ExecutionRoleArn, ""]]
+
+  # Cross-account source
+  IsCrossAccountRepo: !Not [!Equals [!Ref RepositoryAccountId, !Ref "AWS::AccountId"]]
+
+# ==============================================================================
+# RESOURCES
+# ==============================================================================
+Resources:
+
+  # ----------------------------------------------------------------------------
+  # CLOUDWATCH LOG GROUPS
+  # Created before CodeBuild projects so Ref is valid when projects reference them
+  # ----------------------------------------------------------------------------
+  PlanBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableCloudWatch
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub "/codebuild/${ProjectName}-${Environment}-tf-plan"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  ApplyBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableCloudWatch
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub "/codebuild/${ProjectName}-${Environment}-tf-apply"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  PipelineEventLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableCloudWatch
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub "/aws/codepipeline/${ProjectName}-${Environment}"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ----------------------------------------------------------------------------
+  # SNS TOPIC - Pipeline notifications
+  # Sends plan summaries, approval requests, and failure alerts
+  # ----------------------------------------------------------------------------
+  PipelineNotificationTopic:
+    Type: AWS::SNS::Topic
+    Condition: EnableEmailNotifications
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-tf-pipeline-notifications"
+      DisplayName: !Sub "Terraform Pipeline: ${ProjectName} (${Environment})"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-tf-pipeline-notifications"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  PipelineNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: EnableEmailNotifications
+    Properties:
+      TopicArn: !Ref PipelineNotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  PipelineNotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: EnableEmailNotifications
+    Properties:
+      Topics:
+        - !Ref PipelineNotificationTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCodeBuildPublish
+            Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: "sns:Publish"
+            Resource: !Ref PipelineNotificationTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}-*"
+          - Sid: AllowEventsPublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: "sns:Publish"
+            Resource: !Ref PipelineNotificationTopic
+
+  # ----------------------------------------------------------------------------
+  # EVENTBRIDGE - Custom Event Bus
+  # Receives forwarded CodeCommit events from repository accounts
+  # ----------------------------------------------------------------------------
+  TerraformPipelineEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-terraform-pipeline-bus"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-terraform-pipeline-bus"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Team
+          Value: !Ref TeamName
+
+  # Allows the repository account to put events onto this bus
+  TerraformPipelineEventBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Properties:
+      EventBusName: !Ref TerraformPipelineEventBus
+      StatementId: !Sub "AllowRepoAccount-${ProjectName}"
+      Action: "events:PutEvents"
+      Principal: !Ref RepositoryAccountId
+
+  # ----------------------------------------------------------------------------
+  # EVENTBRIDGE RULE - Triggers CodePipeline on CodeCommit push
+  # Listens on the custom bus for forwarded CodeCommit events
+  # Filters by repository name and branch name
+  # ----------------------------------------------------------------------------
+  PipelineTriggerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-pipeline-trigger"
+      Description: !Sub >-
+        Triggers ${ProjectName} pipeline on CodeCommit push
+        to ${RepositoryName}/${BranchName}
+      EventBusName: !Ref TerraformPipelineEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - "aws.codecommit"
+        detail-type:
+          - "CodeCommit Repository State Change"
+        detail:
+          event:
+            - "referenceCreated"
+            - "referenceUpdated"
+          referenceType:
+            - "branch"
+          referenceName:
+            - !Ref BranchName
+          repositoryName:
+            - !Ref RepositoryName
+      Targets:
+        - Id: !Sub "${ProjectName}-pipeline-target"
+          Arn: !Sub
+            - "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${PName}"
+            - PName: !If
+                - UseCustomPipelineName
+                - !Ref PipelineName
+                - !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+          RoleArn: !Ref PipelineRoleArn
+          InputTransformer:
+            InputPathsMap:
+              commitId: "$.detail.commitId"
+            # Single-line JSON string avoids !Sub conflicts with curly brace characters.
+            # <commitId> is an EventBridge InputTransformer token, not a CloudFormation token.
+            InputTemplate: '{"sourceRevisions":[{"actionName":"Source","revisionType":"COMMIT_ID","revisionValue":"<commitId>"}]}'
+
+  # ----------------------------------------------------------------------------
+  # CODEBUILD - Plan Project
+  # Runs: terraform init, validate, plan
+  # ----------------------------------------------------------------------------
+  TerraformPlanProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-tf-plan"
+      Description: !Sub >-
+        Terraform Plan for ${ProjectName}/${Environment}.
+        Runs init, validate, plan. Publishes plan summary via SNS.
+      ServiceRole: !Ref CodeBuildRoleArn
+      TimeoutInMinutes: 60
+      QueuedTimeoutInMinutes: 480
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: S3
+        Location: !Sub "${ArtifactBucket}/build-cache/${ProjectName}-${Environment}-plan"
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: !Ref BuildImage
+        ComputeType: !Ref BuildComputeType
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: TF_VERSION
+            Value: !Ref TerraformVersion
+            Type: PLAINTEXT
+          - Name: TF_DIR
+            Value: !Ref TerraformDirectory
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_BUCKET
+            Value: !Ref BackendBucket
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_KEY
+            Value: !Ref BackendKey
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_REGION
+            Value: !Ref BackendRegion
+            Type: PLAINTEXT
+          - Name: PROJECT_NAME
+            Value: !Ref ProjectName
+            Type: PLAINTEXT
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+            Type: PLAINTEXT
+          - Name: BRANCH_NAME
+            Value: !Ref BranchName
+            Type: PLAINTEXT
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+            Type: PLAINTEXT
+          - Name: SNS_TOPIC_ARN
+            Value: !If [EnableEmailNotifications, !Ref PipelineNotificationTopic, "DISABLED"]
+            Type: PLAINTEXT
+          - Name: TF_EXECUTION_ROLE_ARN
+            Value: !If [HasExecutionRole, !Ref ExecutionRoleArn, "NONE"]
+            Type: PLAINTEXT
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+            Type: PLAINTEXT
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-plan.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: !If [EnableCloudWatch, "ENABLED", "DISABLED"]
+          GroupName: !If
+            - EnableCloudWatch
+            - !Ref PlanBuildLogGroup
+            - !Ref AWS::NoValue
+          StreamName: !If
+            - EnableCloudWatch
+            - "plan-build"
+            - !Ref AWS::NoValue
+        S3Logs:
+          Status: DISABLED
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-tf-plan"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Team
+          Value: !Ref TeamName
+
+  # ----------------------------------------------------------------------------
+  # CODEBUILD - Apply Project
+  # Runs: terraform apply using the saved plan binary from Plan stage
+  # ----------------------------------------------------------------------------
+  TerraformApplyProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-tf-apply"
+      Description: !Sub >-
+        Terraform Apply for ${ProjectName}/${Environment}.
+        Consumes saved plan binary. No re-plan occurs.
+      ServiceRole: !Ref CodeBuildRoleArn
+      TimeoutInMinutes: 120
+      QueuedTimeoutInMinutes: 480
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: S3
+        Location: !Sub "${ArtifactBucket}/build-cache/${ProjectName}-${Environment}-apply"
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: !Ref BuildImage
+        ComputeType: !Ref BuildComputeType
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: TF_VERSION
+            Value: !Ref TerraformVersion
+            Type: PLAINTEXT
+          - Name: TF_DIR
+            Value: !Ref TerraformDirectory
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_BUCKET
+            Value: !Ref BackendBucket
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_KEY
+            Value: !Ref BackendKey
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_REGION
+            Value: !Ref BackendRegion
+            Type: PLAINTEXT
+          - Name: PROJECT_NAME
+            Value: !Ref ProjectName
+            Type: PLAINTEXT
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+            Type: PLAINTEXT
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+            Type: PLAINTEXT
+          - Name: SNS_TOPIC_ARN
+            Value: !If [EnableEmailNotifications, !Ref PipelineNotificationTopic, "DISABLED"]
+            Type: PLAINTEXT
+          - Name: TF_EXECUTION_ROLE_ARN
+            Value: !If [HasExecutionRole, !Ref ExecutionRoleArn, "NONE"]
+            Type: PLAINTEXT
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-apply.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: !If [EnableCloudWatch, "ENABLED", "DISABLED"]
+          GroupName: !If
+            - EnableCloudWatch
+            - !Ref ApplyBuildLogGroup
+            - !Ref AWS::NoValue
+          StreamName: !If
+            - EnableCloudWatch
+            - "apply-build"
+            - !Ref AWS::NoValue
+        S3Logs:
+          Status: DISABLED
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-tf-apply"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Team
+          Value: !Ref TeamName
+
+  # ----------------------------------------------------------------------------
+  # CODEPIPELINE
+  # Orchestrates the CI/CD workflow.
+  #
+  # Pipeline flow:
+  #   Source -> Plan -> [Approval] -> Apply
+  #
+  # Approval stage is controlled by EnableApproval parameter.
+  # Plan binary is always passed from Plan to Apply for integrity.
+  #
+  # IMPORTANT: Stage ProjectName references use !Sub string names (not !Ref on
+  # conditional resources) to avoid CloudFormation validation errors.
+  # ----------------------------------------------------------------------------
+  TerraformPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !If
+        - UseCustomPipelineName
+        - !Ref PipelineName
+        - !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+      RoleArn: !Ref PipelineRoleArn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      RestartExecutionOnUpdate: false
+      Stages:
+
+        # Stage 1: SOURCE
+        # Namespace: SourceVariables MUST be declared here so downstream stages
+        # can reference #{SourceVariables.CommitId}
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration:
+                RepositoryName: !Ref RepositoryName
+                BranchName: !Ref BranchName
+                PollForSourceChanges: "false"
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceOutput
+              Namespace: SourceVariables
+              RoleArn: !If
+                - IsCrossAccountRepo
+                - !Ref PipelineRoleArn
+                - !Ref AWS::NoValue
+              RunOrder: 1
+
+        # Stage 2: PLAN
+        # Always runs TerraformPlanProject
+        - Name: Plan
+          Actions:
+            - Name: TerraformPlan
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Sub "${ProjectName}-${Environment}-tf-plan"
+                EnvironmentVariables: !Sub |
+                  [
+                    {"name":"PIPELINE_EXECUTION_ID","value":"#{codepipeline.PipelineExecutionId}","type":"PLAINTEXT"},
+                    {"name":"COMMIT_ID","value":"#{SourceVariables.CommitId}","type":"PLAINTEXT"},
+                    {"name":"REPOSITORY_NAME","value":"${RepositoryName}","type":"PLAINTEXT"},
+                    {"name":"BRANCH_NAME","value":"${BranchName}","type":"PLAINTEXT"},
+                    {"name":"PIPELINE_NAME","value":"#{codepipeline.PipelineName}","type":"PLAINTEXT"}
+                  ]
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: PlanOutput
+              Namespace: PlanVariables
+              RunOrder: 1
+
+        # Stage 3: APPROVAL - Only when EnableApproval=true
+        - !If
+          - CreateApprovalStage
+          - Name: Approve
+            Actions:
+              - Name: ReviewTerraformPlan
+                ActionTypeId:
+                  Category: Approval
+                  Owner: AWS
+                  Provider: Manual
+                  Version: "1"
+                Configuration:
+                  NotificationArn: !If
+                    - EnableEmailNotifications
+                    - !Ref PipelineNotificationTopic
+                    - !Ref AWS::NoValue
+                  CustomData: !Sub >-
+                    REVIEW REQUIRED | Project: ${ProjectName} | Env: ${Environment} |
+                    Repo: ${RepositoryName} | Branch: ${BranchName} |
+                    Pipeline: https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/#{codepipeline.PipelineName}/view
+                  ExternalEntityLink: !Sub >-
+                    https://${AWS::Region}.console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ProjectName}-${Environment}-tf-plan/history
+                RunOrder: 1
+          - !Ref AWS::NoValue
+
+        # Stage 4: APPLY
+        # Always runs TerraformApplyProject with saved plan binary
+        - Name: Apply
+          Actions:
+            - Name: TerraformApply
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Sub "${ProjectName}-${Environment}-tf-apply"
+                EnvironmentVariables: !Sub |
+                  [
+                    {"name":"PIPELINE_EXECUTION_ID","value":"#{codepipeline.PipelineExecutionId}","type":"PLAINTEXT"},
+                    {"name":"COMMIT_ID","value":"#{SourceVariables.CommitId}","type":"PLAINTEXT"},
+                    {"name":"REPOSITORY_NAME","value":"${RepositoryName}","type":"PLAINTEXT"},
+                    {"name":"BRANCH_NAME","value":"${BranchName}","type":"PLAINTEXT"},
+                    {"name":"PIPELINE_NAME","value":"#{codepipeline.PipelineName}","type":"PLAINTEXT"}
+                  ]
+              InputArtifacts:
+                - Name: PlanOutput
+              OutputArtifacts:
+                - Name: ApplyOutput
+              RunOrder: 1
+
+      Tags:
+        - Key: Name
+          Value: !If
+            - UseCustomPipelineName
+            - !Ref PipelineName
+            - !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Repository
+          Value: !Ref RepositoryName
+        - Key: Branch
+          Value: !Ref BranchName
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Team
+          Value: !Ref TeamName
+
+  # ----------------------------------------------------------------------------
+  # EVENTBRIDGE RULE - Pipeline failure notifications
+  # Listens on the DEFAULT bus for CodePipeline state change events
+  # Note: EventPattern does not support Fn::If - pipeline name filter is removed.
+  # All pipeline state changes in this account will match; the SNS message
+  # includes the pipeline name for identification.
+  # ----------------------------------------------------------------------------
+  PipelineFailureNotificationRule:
+    Type: AWS::Events::Rule
+    Condition: EnableEmailNotifications
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-pipeline-failure-alert"
+      Description: !Sub "Publishes SNS alert when ${ProjectName} pipeline fails"
+      EventPattern:
+        source:
+          - "aws.codepipeline"
+        detail-type:
+          - "CodePipeline Pipeline Execution State Change"
+        detail:
+          state:
+            - "FAILED"
+            - "STOPPED"
+      State: ENABLED
+      Targets:
+        - Id: PipelineFailureSNS
+          Arn: !Ref PipelineNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              pipeline:    "$.detail.pipeline"
+              state:       "$.detail.state"
+              executionId: "$.detail.execution-id"
+              time:        "$.time"
+            InputTemplate: "\"PIPELINE ALERT | State: <state> | Pipeline: <pipeline> | Execution: <executionId> | Time: <time>\""
+
+# ==============================================================================
+# OUTPUTS
+# ==============================================================================
+Outputs:
+
+  PipelineName:
+    Description: Name of the CodePipeline
+    Value: !If
+      - UseCustomPipelineName
+      - !Ref PipelineName
+      - !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineName"
+
+  PipelineArn:
+    Description: ARN of the CodePipeline
+    Value: !Sub
+      - "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${PName}"
+      - PName: !If
+          - UseCustomPipelineName
+          - !Ref PipelineName
+          - !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineArn"
+
+  PipelineUrl:
+    Description: Console URL for the CodePipeline
+    Value: !Sub
+      - "https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${PName}/view"
+      - PName: !If
+          - UseCustomPipelineName
+          - !Ref PipelineName
+          - !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineUrl"
+
+  EventBusArn:
+    Description: ARN of the custom EventBridge Event Bus - pass this to Template 2
+    Value: !GetAtt TerraformPipelineEventBus.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EventBusArn"
+
+  EventBusName:
+    Description: Name of the custom EventBridge Event Bus
+    Value: !Ref TerraformPipelineEventBus
+    Export:
+      Name: !Sub "${AWS::StackName}-EventBusName"
+
+  SnsTopicArn:
+    Description: ARN of the SNS notification topic
+    Value: !If
+      - EnableEmailNotifications
+      - !Ref PipelineNotificationTopic
+      - "NOTIFICATIONS_DISABLED"
+    Export:
+      Name: !Sub "${AWS::StackName}-SnsTopicArn"
+
+  PlanLogGroupName:
+    Description: CloudWatch Log Group for Terraform Plan builds
+    Value: !If
+      - EnableCloudWatch
+      - !Ref PlanBuildLogGroup
+      - "CLOUDWATCH_DISABLED"
+    Export:
+      Name: !Sub "${AWS::StackName}-PlanLogGroup"
+
+  ApplyLogGroupName:
+    Description: CloudWatch Log Group for Terraform Apply builds
+    Value: !If
+      - EnableCloudWatch
+      - !Ref ApplyBuildLogGroup
+      - "CLOUDWATCH_DISABLED"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApplyLogGroup"
+
+  ProjectName:
+    Description: Project identifier
+    Value: !Ref ProjectName
+    Export:
+      Name: !Sub "${AWS::StackName}-ProjectName"
+
+  Environment:
+    Description: Environment label
+    Value: !Ref Environment
+    Export:
+      Name: !Sub "${AWS::StackName}-Environment"

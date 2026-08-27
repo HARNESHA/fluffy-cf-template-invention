@@ -1,0 +1,42 @@
+[
+  {
+    "ParameterKey": "RepositoryName",
+    "ParameterValue": "payments-infra"
+  },
+  {
+    "ParameterKey": "BranchName",
+    "ParameterValue": "main"
+  },
+  {
+    "ParameterKey": "PipelineAccountId",
+    "ParameterValue": "444455556666"
+  },
+  {
+    "ParameterKey": "PipelineEventBusArn",
+    "ParameterValue": "arn:aws:events:us-east-1:444455556666:event-bus/payments-infra-prod-terraform-pipeline-bus"
+  },
+  {
+    "ParameterKey": "EnableForwarding",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "ForwardDeleteEvents",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "payments-infra"
+  },
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "prod"
+  },
+  {
+    "ParameterKey": "Owner",
+    "ParameterValue": "platform-engineering"
+  },
+  {
+    "ParameterKey": "CostCenter",
+    "ParameterValue": "CC-1042"
+  }
+]
