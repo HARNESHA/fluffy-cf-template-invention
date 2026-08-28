@@ -13,7 +13,7 @@
   },
   {
     "ParameterKey": "RepositoryName",
-    "ParameterValue": "org-tf-infra"
+    "ParameterValue": "my-terraform-repo"
   },
   {
     "ParameterKey": "RepositoryAccountId",
@@ -25,7 +25,7 @@
   },
   {
     "ParameterKey": "BranchName",
-    "ParameterValue": "test"
+    "ParameterValue": "main"
   },
   {
     "ParameterKey": "TerraformDirectory",
@@ -61,7 +61,7 @@
   },
   {
     "ParameterKey": "ExecutionRoleArn",
-    "ParameterValue": "arn:aws:iam::677748260495:role/InfraProvisionerRole"
+    "ParameterValue": "arn:aws:iam::826136930409:role/InfraProvisionerRole"
   },
   {
     "ParameterKey": "ArtifactBucket",
