@@ -92,6 +92,25 @@ cd org-stackset-template
   --dry-run
 ```
 
+**Team/org IAM path:** if your organization requires roles under a path (e.g. a
+service path such as `/service-role/`, or a team path such as `/teams/sre/`), add
+`--role-path`. The ARNs then include it:
+
+```bash
+./iam/create-iam-roles.sh \
+  --account-id 444455556666 \
+  --repo-account-id 111122223333 \
+  --role-path /teams/sre/ \
+  --artifact-bucket my-org-codepipeline-artifacts-444455556666 \
+  --state-bucket my-org-terraform-state-prod
+```
+
+Produces ARNs like `arn:aws:iam::444455556666:role/teams/sre/TerraformPipelineServiceRole` —
+use those (including the path) in the `PipelineRoleArn` / `CodeBuildRoleArn`
+parameters when deploying Template 1, and in the repo policy principal in Step 3.2.
+Valid formats: `/xyz/`, `/teams/sre/`, `/service-role/`. A bare `/` (or omitting
+`--role-path`) creates roles at the IAM root.
+
 #### Option B: Manual Creation
 
 ```bash

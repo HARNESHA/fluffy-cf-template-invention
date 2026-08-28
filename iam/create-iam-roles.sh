@@ -10,6 +10,10 @@
 #   1. TerraformPipelineServiceRole  — CodePipeline service role
 #   2. TerraformCodeBuildRole        — CodeBuild service role (Plan + Apply)
 #
+# Roles are created at the IAM root path by default. Use --role-path to place
+# them under a team/org path (e.g. --role-path /xyz/). The resulting ARNs then
+# include the path: arn:aws:iam::<acct>:role/xyz/<role-name>
+#
 # The Execution Role is NOT created here — it lives in the target account
 # and trusts the CodeBuild role. See trust-execution-role.json for the
 # trust policy template.
@@ -29,6 +33,7 @@ ARTIFACT_BUCKET=""
 STATE_BUCKET=""
 PROJECT_NAME="*"
 REPOSITORY_NAME="*"
+ROLE_PATH=""
 DRY_RUN=false
 
 # ---------------------------------------------------------------------------
@@ -45,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --state-bucket)  STATE_BUCKET="$2";  shift 2 ;;
     --project)       PROJECT_NAME="$2";  shift 2 ;;
     --repo)          REPOSITORY_NAME="$2"; shift 2 ;;
+    --role-path)     ROLE_PATH="$2";     shift 2 ;;
     --dry-run)       DRY_RUN=true;       shift ;;
     --help)
       echo "Usage: $0 --account-id <id> --region <region> [options]"
@@ -61,6 +67,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --state-bucket     S3 bucket for Terraform state"
       echo "  --project          Project name filter (default: *)"
       echo "  --repo             Repository name filter (default: *)"
+      echo "  --role-path        IAM role path for team/org segregation, e.g. --role-path /xyz/ (default: root)"
       echo "  --dry-run          Print commands without executing"
       exit 0
       ;;
@@ -86,12 +93,26 @@ if [[ -z "$REPO_ACCOUNT_ID" ]]; then
   REPO_ACCOUNT_ID="$ACCOUNT_ID"
 fi
 
+# IAM path: empty (root) or must start AND end with "/", no spaces,
+# no duplicate slashes, max 512 chars (AWS IAM limit).
+if [[ -n "$ROLE_PATH" ]]; then
+  if [[ "$ROLE_PATH" == "/" ]]; then
+    # A single slash is the root path — treat as empty to avoid "role//Name"
+    ROLE_PATH=""
+  elif [[ ! "$ROLE_PATH" =~ ^/[a-zA-Z0-9._=,@+-]+(/[a-zA-Z0-9._=,@+-]+)*/$ ]]; then
+    echo "ERROR: --role-path must start and end with '/' and contain only [a-zA-Z0-9._=,@+-]"
+    echo "Example: --role-path /xyz/ or --role-path /teams/sre/"
+    exit 1
+  fi
+fi
+
 echo "============================================"
 echo "  Creating IAM Roles for Terraform Pipeline"
 echo "============================================"
 echo "Account ID       : $ACCOUNT_ID"
 echo "Repo Account ID  : $REPO_ACCOUNT_ID"
 echo "Region          : $REGION"
+echo "Role Path       : ${ROLE_PATH:-/ (root)}"
 echo "Pipeline Role   : $PIPELINE_ROLE_NAME"
 echo "CodeBuild Role  : $CODEBUILD_ROLE_NAME"
 echo "Artifact Bucket : ${ARTIFACT_BUCKET:-<not set>}"
@@ -141,7 +162,14 @@ TRUST_POLICY=$(cat <<EOF
 EOF
 )
 
+if [[ -n "$ROLE_PATH" ]]; then
+  PIPELINE_ROLE_PATH="--path '$ROLE_PATH'"
+else
+  PIPELINE_ROLE_PATH=""
+fi
+
 run_cmd "aws iam create-role \\
+  $PIPELINE_ROLE_PATH \\
   --role-name '$PIPELINE_ROLE_NAME' \\
   --assume-role-policy-document '$TRUST_POLICY' \\
   --description 'Service role for Terraform CodePipeline' \\
@@ -253,6 +281,7 @@ EOF
 )
 
 run_cmd "aws iam create-role \\
+  $PIPELINE_ROLE_PATH \\
   --role-name '$CODEBUILD_ROLE_NAME' \\
   --assume-role-policy-document '$CODEBUILD_TRUST' \\
   --description 'Service role for Terraform CodeBuild (Plan + Apply)' \\
@@ -344,27 +373,30 @@ echo "  iam/trust-execution-role.json"
 echo ""
 echo "Replace ACCOUNT_ID with: $ACCOUNT_ID"
 echo "Replace PROJECT_NAME with your project name."
+if [[ -n "$ROLE_PATH" ]]; then
+  echo "If roles live under a path, include it in ARNs (e.g. arn:aws:iam::${ACCOUNT_ID}:role${ROLE_PATH}PROJECT_NAME)."
+fi
 echo ""
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
+ROLE_ARN_PREFIX="arn:aws:iam::${ACCOUNT_ID}:role${ROLE_PATH}"
 echo "============================================"
 echo "  IAM Roles Created Successfully"
 echo "============================================"
 echo ""
 echo "Roles created:"
 echo "  1. $PIPELINE_ROLE_NAME"
-echo "     ARN: arn:aws:iam::${ACCOUNT_ID}:role/${PIPELINE_ROLE_NAME}"
+echo "     ARN: ${ROLE_ARN_PREFIX}${PIPELINE_ROLE_NAME}"
 echo ""
 echo "  2. $CODEBUILD_ROLE_NAME"
-echo "     ARN: arn:aws:iam::${ACCOUNT_ID}:role/${CODEBUILD_ROLE_NAME}"
+echo "     ARN: ${ROLE_ARN_PREFIX}${CODEBUILD_ROLE_NAME}"
 echo ""
 echo "Next steps:"
-echo "  1. Deploy Template 2 (codecommit-event-forwarder.yaml) with the"
-echo "     PipelineRoleArn parameter to grant the pipeline role cross-account"
-echo "     read access to the CodeCommit repository (creates the repository"
-echo "     policy automatically)."
+echo "  1. Apply the CodeCommit repository policy for cross-account Source"
+echo "     access (see docs/deployment-guide.md Step 3.2 - put-repository-policy)."
 echo "  2. Create Execution Roles in target accounts (optional)."
-echo "  3. Deploy Template 1 with these role ARNs."
+echo "  3. Deploy Template 1 with these role ARNs (path included):"
+echo "     ARN format: arn:aws:iam::<acct>:role${ROLE_PATH}<role-name>"
 echo "============================================"
