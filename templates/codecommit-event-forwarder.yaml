@@ -111,7 +111,6 @@ Parameters:
   Environment:
     Type: String
     Description: Environment label for tagging.
-    AllowedValues: [dev, staging, prod, shared]
     Default: dev
 
   Owner:
