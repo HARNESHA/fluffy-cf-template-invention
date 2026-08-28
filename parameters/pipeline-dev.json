@@ -1,11 +1,11 @@
 [
   {
     "ParameterKey": "ProjectName",
-    "ParameterValue": "org--infra"
+    "ParameterValue": "org-infra"
   },
   {
     "ParameterKey": "PipelineName",
-    "ParameterValue": "org-tf-dms-cloudtrail-test"
+    "ParameterValue": "org-tf-dms-test"
   },
   {
     "ParameterKey": "Environment",
@@ -17,7 +17,7 @@
   },
   {
     "ParameterKey": "RepositoryAccountId",
-    "ParameterValue": "654654593856"
+    "ParameterValue": "826136930409"
   },
   {
     "ParameterKey": "RepositoryRegion",
@@ -37,7 +37,7 @@
   },
   {
     "ParameterKey": "BackendBucket",
-    "ParameterValue": "remote-state--test-acct-test"
+    "ParameterValue": "my-org-terraform-state-prodddd"
   },
   {
     "ParameterKey": "BackendKey",
@@ -49,15 +49,15 @@
   },
   {
     "ParameterKey": "EnableApproval",
-    "ParameterValue": "false"
+    "ParameterValue": "true"
   },
   {
     "ParameterKey": "PipelineRoleArn",
-    "ParameterValue": "arn:aws:iam::677748260495:role/application_role/TerraformPipelineServiceRole"
+    "ParameterValue": "arn:aws:iam::826136930409:role/application_role/TerraformPipelineServiceRole"
   },
   {
     "ParameterKey": "CodeBuildRoleArn",
-    "ParameterValue": "arn:aws:iam::677748260495:role/application_role/TerraformCodeBuildRole"
+    "ParameterValue": "arn:aws:iam::826136930409:role/application_role/TerraformCodeBuildRole"
   },
   {
     "ParameterKey": "ExecutionRoleArn",
@@ -65,7 +65,7 @@
   },
   {
     "ParameterKey": "ArtifactBucket",
-    "ParameterValue": "org-codepipeline-artifacts-677748260495"
+    "ParameterValue": "my-org-codepipeline-artifacts-444455556666"
   },
   {
     "ParameterKey": "BuildImage",

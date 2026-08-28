@@ -75,34 +75,18 @@ Two roles required in the **Pipeline Account**.
 
 ```bash
 cd org-stackset-template
-
-# Create roles with bucket scoping
-./iam/create-iam-roles.sh \
-  --account-id 444455556666 \
-  --region us-east-1 \
-  --artifact-bucket my-org-codepipeline-artifacts-444455556666 \
-  --state-bucket my-org-terraform-state-prod \
-  --project '*' \
-  --repo '*'
-
-# Dry run first to review
-./iam/create-iam-roles.sh \
-  --account-id 444455556666 \
-  --region us-east-1 \
-  --dry-run
 ```
-
-**Team/org IAM path:** if your organization requires roles under a path (e.g. a
-service path such as `/service-role/`, or a team path such as `/teams/sre/`), add
-`--role-path`. The ARNs then include it:
 
 ```bash
 ./iam/create-iam-roles.sh \
-  --account-id 444455556666 \
-  --repo-account-id 111122223333 \
-  --role-path /teams/sre/ \
+  --account-id 826136930409 \
+  --repo-account-id 826136930409 \
+  --role-path /application_role/ \
   --artifact-bucket my-org-codepipeline-artifacts-444455556666 \
-  --state-bucket my-org-terraform-state-prod
+  --state-bucket my-org-terraform-state-prodddd \
+  --project '*' \
+  --repo '*' \
+  --dry-run
 ```
 
 Produces ARNs like `arn:aws:iam::444455556666:role/teams/sre/TerraformPipelineServiceRole` —
