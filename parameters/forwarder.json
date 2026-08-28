@@ -1,7 +1,7 @@
 [
   {
     "ParameterKey": "RepositoryName",
-    "ParameterValue": "payments-infra"
+    "ParameterValue": "my-terraform-repo"
   },
   {
     "ParameterKey": "BranchName",
@@ -9,11 +9,11 @@
   },
   {
     "ParameterKey": "PipelineAccountId",
-    "ParameterValue": "444455556666"
+    "ParameterValue": "826136930409"
   },
   {
     "ParameterKey": "PipelineEventBusArn",
-    "ParameterValue": "arn:aws:events:us-east-1:444455556666:event-bus/payments-infra-prod-terraform-pipeline-bus"
+    "ParameterValue": "arn:aws:events:us-east-1:826136930409:event-bus/org-infra-test-terraform-pipeline-bus"
   },
   {
     "ParameterKey": "EnableForwarding",
@@ -25,11 +25,11 @@
   },
   {
     "ParameterKey": "ProjectName",
-    "ParameterValue": "payments-infra"
+    "ParameterValue": "org-infra"
   },
   {
     "ParameterKey": "Environment",
-    "ParameterValue": "prod"
+    "ParameterValue": "test"
   },
   {
     "ParameterKey": "Owner",
