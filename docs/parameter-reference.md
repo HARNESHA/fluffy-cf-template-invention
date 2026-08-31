@@ -1,6 +1,6 @@
 # Parameter Reference
 
-Complete reference for all parameters across both CloudFormation templates.
+Complete reference for all parameters for the CloudFormation template.
 
 ---
 
@@ -155,50 +155,14 @@ All resources receive these standard tags in addition to parameter-driven tags:
 
 ---
 
-## Template 2 — codecommit-event-forwarder.yaml
-
-### Group 1: Repository Configuration
-
-| Parameter | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `RepositoryName` | String | Yes | — | CodeCommit repository name in this account to monitor |
-| `BranchName` | String | Yes | `main` | Branch name to forward events for. Only push events on this branch are forwarded |
-
-### Group 2: Pipeline Account Target
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `PipelineAccountId` | String | Yes | 12-digit AWS Account ID of the pipeline account. Used for informational purposes; the actual target is defined by the ARN |
-| `PipelineEventBusArn` | String | Yes | Full ARN of the custom EventBridge Event Bus in the pipeline account. Get this from Template 1 stack output `EventBusArn`. Format: `arn:aws:events:{region}:{account}:event-bus/{name}` |
-
-### Group 3: Feature Flags
-
-| Parameter | Type | Required | Default | Allowed Values | Description |
-|---|---|---|---|---|---|
-| `EnableForwarding` | String | No | `true` | `true`, `false` | Master enable/disable switch. Set to `false` to pause forwarding without deleting the stack — useful during maintenance windows |
-| `ForwardDeleteEvents` | String | No | `false` | `true`, `false` | When `true`, also forwards `referenceDeleted` events (branch deletions). Leave `false` for standard CI/CD |
-
-### Group 4: Tagging
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `ProjectName` | String | `unassigned` | Project name for tagging |
-| `Environment` | String | `dev` | Environment for tagging (`dev`, `staging`, `prod`, `shared`) |
-| `Owner` | String | `platform-engineering` | Owner for tagging |
-| `CostCenter` | String | `unassigned` | Cost center for tagging |
-
----
-
 ## Stack Outputs
-
-### Template 1 Outputs
 
 | Output Key | Export Name | Description |
 |---|---|---|
 | `PipelineName` | `{StackName}-PipelineName` | Name of the CodePipeline |
 | `PipelineArn` | `{StackName}-PipelineArn` | ARN of the CodePipeline |
 | `PipelineUrl` | `{StackName}-PipelineUrl` | AWS Console URL for the pipeline |
-| `EventBusArn` | `{StackName}-EventBusArn` | ARN of the custom Event Bus — **pass this to Template 2** |
+| `EventBusArn` | `{StackName}-EventBusArn` | ARN of the custom EventBridge Event Bus — pass this to `setup-event-forwarder.sh` |
 | `EventBusName` | `{StackName}-EventBusName` | Name of the custom Event Bus |
 | `SnsTopicArn` | `{StackName}-SnsTopicArn` | ARN of the SNS topic (`NOTIFICATIONS_DISABLED` if off) |
 | `PlanLogGroupName` | `{StackName}-PlanLogGroup` | CloudWatch Log Group for Plan builds |
@@ -206,13 +170,55 @@ All resources receive these standard tags in addition to parameter-driven tags:
 | `ProjectName` | `{StackName}-ProjectName` | Project identifier |
 | `Environment` | `{StackName}-Environment` | Environment label |
 
-### Template 2 Outputs
+---
 
-| Output Key | Export Name | Description |
-|---|---|---|
-| `ForwarderRuleArn` | `{StackName}-ForwarderRuleArn` | ARN of the EventBridge forwarding rule |
-| `ForwarderRuleName` | `{StackName}-ForwarderRuleName` | Name of the forwarding rule |
-| `ForwarderRoleArn` | `{StackName}-ForwarderRoleArn` | ARN of the cross-account PutEvents IAM role |
-| `TargetEventBusArn` | `{StackName}-TargetEventBusArn` | Target Event Bus ARN (echoes the input parameter) |
-| `ForwardingStatus` | `{StackName}-ForwardingStatus` | `ENABLED` or `DISABLED` |
-| `RepositoryMonitored` | `{StackName}-RepositoryMonitored` | `{repo}/{branch}` being monitored |
+## CLI Script Reference
+
+CLI scripts under `iam/` automate IAM role creation and cross-account EventBridge forwarding setup.
+
+### setup-event-forwarder.sh
+
+Creates the EventBridge rule, IAM role, and event forwarding for a CodeCommit repository in a repository account.
+
+**Location:** `iam/setup-event-forwarder.sh`
+
+| Flag | Required | Default | Description |
+|---|---|---|---|
+| `--pipeline-account-id` | Yes | — | 12-digit AWS Account ID of the pipeline account |
+| `--event-bus-arn` | Yes | — | ARN of the custom EventBridge Event Bus in the pipeline account. Use the `EventBusArn` stack output |
+| `--repo-account-id` | No | Current account | AWS Account ID where the CodeCommit repository lives |
+| `--repository-name` | Yes | — | CodeCommit repository name to monitor |
+| `--branch-name` | No | `main` | Git branch to forward events for |
+| `--region` | No | `us-east-1` | AWS Region of the EventBridge event bus |
+| `--role-name` | No | Auto-generated | Name of the cross-account IAM role for PutEvents |
+| `--enable-delete-events` | No | `false` | When set, also forwards `referenceDeleted` events (branch deletions) |
+| `--dry-run` | No | `false` | Print the IAM policy and resources that would be created without making changes |
+| `--profile` | No | `default` | AWS CLI named profile to use |
+
+### grant-artifact-access.sh
+
+Grants the forwarder role access to the CodePipeline artifact bucket in the pipeline account.
+
+**Location:** `iam/grant-artifact-access.sh`
+
+| Flag | Required | Default | Description |
+|---|---|---|---|
+| `--artifact-bucket` | Yes | — | S3 bucket name for CodePipeline artifact storage |
+| `--forwarder-role-arn` | Yes | — | ARN of the cross-account EventBridge forwarder IAM role |
+| `--pipeline-account-id` | Yes | — | 12-digit AWS Account ID of the pipeline account |
+| `--dry-run` | No | `false` | Print the S3 bucket policy that would be applied without making changes |
+| `--profile` | No | `default` | AWS CLI named profile to use |
+
+### create-iam-roles.sh
+
+Creates the pre-existing IAM roles required by the CloudFormation template.
+
+**Location:** `iam/create-iam-roles.sh`
+
+| Flag | Required | Default | Description |
+|---|---|---|---|
+| `--project-name` | Yes | — | Project name prefix for role names |
+| `--artifact-bucket` | Yes | — | S3 bucket name for CodePipeline artifact storage |
+| `--event-bus-arn` | No | — | ARN of the custom EventBus (required if you want the pipeline role to have `events:PutEvents` permission) |
+| `--dry-run` | No | `false` | Print the IAM policies that would be created without making changes |
+| `--profile` | No | `default` | AWS CLI named profile to use |

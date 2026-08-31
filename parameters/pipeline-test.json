@@ -77,7 +77,7 @@
   },
   {
     "ParameterKey": "NotificationEmail",
-    "ParameterValue": "rudr5075@.edu"
+    "ParameterValue": "user@example.com"
   },
   {
     "ParameterKey": "EnableEmailNotifications",

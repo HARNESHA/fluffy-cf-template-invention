@@ -2,10 +2,7 @@
 
 ## Overview
 
-The framework consists of two CloudFormation templates deployed via StackSets
-across an AWS Organization. Together they form an event-driven, cross-account
-Terraform CI/CD pipeline where repositories and the pipeline infrastructure
-live in separate AWS accounts.
+The framework consists of a single CloudFormation template (`terraform-pipeline-framework.yaml`) deployed to a central **Pipeline Account**. Cross-account event forwarding is handled by a CLI-created IAM Role and EventBridge Rule in each repository account. Together they form an event-driven, cross-account Terraform CI/CD pipeline where repositories and the pipeline infrastructure live in separate AWS accounts.
 
 ---
 
@@ -17,7 +14,7 @@ live in separate AWS accounts.
 │                        Management Account                                 │
 │                        (000000000000)                                     │
 │                                                                           │
-│   StackSets deploy both templates to target accounts                      │
+│   StackSet deploys 1 template to Pipeline Account                         │
 └────────────────────────────┬─────────────────────────────────────────────┘
                              │
            ┌─────────────────┴──────────────────┐
@@ -27,25 +24,20 @@ live in separate AWS accounts.
 │  REPOSITORY ACCOUNT  │           │         PIPELINE ACCOUNT           │
 │  (111122223333)      │           │         (444455556666)              │
 │                      │           │                                    │
-│  Template 2          │           │  Template 1                        │
-│  codecommit-event-   │           │  terraform-pipeline-framework      │
-│  forwarder.yaml      │           │                                    │
-│                      │           │  Per-project resources:            │
+│  No CloudFormation   │           │  terraform-pipeline-framework      │
+│                      │           │  (1 template, 12+ resources)       │
+│  CLI-Created:        │           │                                    │
 │  ┌────────────────┐  │           │  ┌──────────────────────────────┐  │
-│  │  CodeCommit    │  │           │  │  Custom EventBridge Bus      │  │
-│  │  Repository    │  │           │  │  EventBridge Trigger Rule    │  │
-│  └───────┬────────┘  │           │  │  CodePipeline                │  │
-│          │ push      │           │  │  CodeBuild (Plan)            │  │
-│          ▼           │           │  │  CodeBuild (Apply)           │  │
-│  ┌───────────────┐   │           │  │  SNS Topic                   │  │
-│  │  EventBridge  │   │  events   │  │  CloudWatch Log Groups       │  │
-│  │  Rule         ├───┼──────────►│  └──────────────────────────────┘  │
-│  │  (default bus)│   │ PutEvents │                                    │
-│  └───────────────┘   │           │                                    │
-│                      │           │                                    │
-│  IAM Role            │           │                                    │
-│  (events:PutEvents   │           │                                    │
-│   only)              │           │                                    │
+│  │  IAM Role      │  │           │  │  Custom EventBridge Bus      │  │
+│  │  (forwarder)   │  │           │  │  EventBridge Trigger Rule    │  │
+│  ├────────────────┤  │           │  │  CodePipeline                │  │
+│  │  EventBridge   │  │ events    │  │  CodeBuild (Plan)            │  │
+│  │  Rule          ├──┼──────────►│  │  CodeBuild (Apply)           │  │
+│  │  (default bus) │  │ PutEvents │  │  SNS Topic + Subscription    │  │
+│  ├────────────────┤  │           │  │  CloudWatch Log Groups       │  │
+│  │  CodeCommit    │  │           │  │  EventBridge Failure Rule    │  │
+│  │  Repository    │  │           │  └──────────────────────────────┘  │
+│  └────────────────┘  │           │                                    │
 └──────────────────────┘           └────────────────────────────────────┘
 ```
 
@@ -63,21 +55,21 @@ Every pipeline execution follows this exact sequence:
    to the DEFAULT EventBridge bus in the repository account
            │
            ▼
-3. EventBridge Rule (Template 2) matches the event:
+3. EventBridge Rule (CLI-created by setup-event-forwarder.sh)
+   on the default bus matches the event:
      source          = aws.codecommit
-     repositoryName  = <RepositoryName parameter>
-     referenceName   = <BranchName parameter>
      referenceType   = branch   ← explicitly excludes tags
      event           = referenceCreated | referenceUpdated
            │
-           │  cross-account PutEvents via IAM Role
+           │  cross-account PutEvents via generic IAM Role
+           │  (events:PutEvents on arn:aws:events:*:<pipeline-acct>:event-bus/*)
            ▼
 4. Custom Event Bus in Pipeline Account receives the event
-   (Template 1: TerraformPipelineEventBus)
+   (TerraformPipelineEventBus)
            │
            ▼
 5. EventBridge Rule on the custom bus triggers CodePipeline
-   (Template 1: PipelineTriggerRule)
+   (PipelineTriggerRule)
    Passes commitId as a source revision override
            │
            ▼
@@ -136,7 +128,7 @@ Every pipeline execution follows this exact sequence:
 | 13 | `PipelineFailureNotificationRule` | `AWS::Events::Rule` | `EnableEmailNotifications=true` | Always when notifications enabled |
 | 14 | `PipelineNotificationSubscription` | `AWS::SNS::Subscription` | `EnableEmailNotifications=true` | Always when notifications enabled |
 
-**Note:** CloudWatch Log Groups (resources 1-3) also have condition `EnableCloudWatch=true`.
+**Note:** CloudWatch Log Groups have no `DeletionPolicy`. They are destroyed when the stack is deleted.
 
 ### Template 1 — Conditions Reference
 
@@ -159,26 +151,79 @@ Every pipeline execution follows this exact sequence:
 
 ---
 
-### Template 2 — codecommit-event-forwarder.yaml
+### CLI-Created Resources — Repository Account
 
-**Deployed to: Repository Accounts**
-**Resources per stack: 2 (always)**
+Created by `iam/setup-event-forwarder.sh` in each repository account.
 
-| # | Resource Logical ID | AWS Type | Purpose |
+| # | Resource | AWS Type | Purpose |
 |---|---|---|---|
-| 1 | `EventForwarderRole` | `AWS::IAM::Role` | Assumed by EventBridge to `PutEvents` to the pipeline account bus |
-| 2 | `CodeCommitForwarderRule` | `AWS::Events::Rule` | Captures CodeCommit events on the default bus and forwards them |
+| 1 | Event Forwarder IAM Role | `aws iam create-role` | Generic role for EventBridge to `PutEvents` to any pipeline bus |
+| 2 | EventBridge Forwarder Rule | `aws events put-rule` | Captures CodeCommit pushes on the default bus and forwards them |
 
-#### Conditions Reference
+#### IAM Role Details
 
-| Condition | Expression | Controls |
-|---|---|---|
-| `ForwardingEnabled` | `EnableForwarding == "true"` | Rule state (ENABLED/DISABLED) |
-| `IncludeDeleteEvents` | `ForwardDeleteEvents == "true"` | Include `referenceDeleted` in event pattern |
+| Property | Value |
+|---|---|
+| Trust Principal | `events.amazonaws.com` |
+| Trust Condition | `aws:SourceAccount` = repo account ID |
+| Policy Statement | `events:PutEvents` on `arn:aws:events:*:<pipeline-account-id>:event-bus/*` |
+| Created by | `iam/setup-event-forwarder.sh` |
+
+The role is **generic** — it allows putting events to any event bus in the pipeline account. This means a single role can target multiple pipeline stacks.
+
+#### EventBridge Rule Details
+
+| Property | Value |
+|---|---|
+| Bus | Default bus in the repo account |
+| Event Source | `aws.codecommit` |
+| Event Pattern | `referenceType = branch`, events = `referenceCreated`, `referenceUpdated` |
+| Target | Custom event bus ARN passed via `--event-bus-arn` |
+| Created by | `iam/setup-event-forwarder.sh` |
+
+#### Bucket Policy
+
+Created by `iam/grant-artifact-access.sh` in the **Pipeline Account**.
+Grants the CodeBuild roles in the pipeline account access to the artifact S3 bucket.
 
 ---
 
-## Pipeline Artifact Flow
+## Account Topology Summary
+
+| Account | Resources | Provisioned By |
+|---|---|---|
+| **Pipeline Account** | 1 CloudFormation template (14 resources): EventBus, TriggerRule, Pipeline, CodeBuild, SNS, Logs | `terraform-pipeline-framework.yaml` via StackSets |
+| **Repository Account** | 2 CLI-created resources: Forwarder IAM Role + EventBridge Rule | `iam/setup-event-forwarder.sh` |
+
+---
+
+## Deployment Flow
+
+```
+Step 1: Create IAM roles + S3 buckets
+         (per-account, manual or separate automation)
+              │
+              ▼
+Step 2: Deploy terraform-pipeline-framework.yaml to Pipeline Account
+         via StackSet → outputs EventBusArn
+              │
+              ▼
+Step 3: Run iam/setup-event-forwarder.sh in Repository Account
+         --event-bus-arn <EventBusArn from Step 2>
+         (creates IAM Role + EventBridge Rule on default bus)
+              │
+              ▼
+Step 4: Run iam/grant-artifact-access.sh in Pipeline Account
+         (grants CodeBuild access to artifact S3 bucket)
+              │
+              ▼
+Step 5: Copy buildspec files to artifact bucket
+         Push commit → CodeCommit event → forwarder → pipeline triggers
+```
+
+---
+
+## Artifact Flow
 
 ```
 S3 Artifact Bucket (ArtifactBucket parameter)
@@ -225,3 +270,5 @@ Each Terraform repo gets its own isolated stack:
 ```
 
 No shared state, no cross-pipeline interference, full isolation per project.
+
+Each repository account needs only two CLI-created resources (IAM Role + EventBridge Rule), making it trivial to add new repos.

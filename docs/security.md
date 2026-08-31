@@ -2,21 +2,27 @@
 
 ## IAM Least Privilege
 
-### Template 2 — Absolute Minimum Permissions
+### Event Forwarder Role (Created by CLI)
 
-The `EventForwarderRole` in Template 2 is the smallest possible IAM role for
-its purpose:
+The `EventForwarderRole` is created by the `iam/setup-event-forwarder.sh` script
+in the repo account. It is a generic, single-purpose role that serves all
+pipelines in the repo account:
 
 ```
 Action:    events:PutEvents
-Resource:  <exact target Event Bus ARN>   ← no wildcards
+Resource:  arn:aws:events:*:<pipeline-account-id>:event-bus/*
 Trust:     events.amazonaws.com
            Condition: aws:SourceAccount = <repo account>
 ```
 
-No S3, no CodeCommit, no EC2, no wildcards on resources. If this role is
-compromised, the attacker can only send EventBridge events to one specific
-Event Bus — they cannot read code, access state, or invoke pipelines directly.
+The role is scoped to exactly one pipeline account — it can only send events to
+event buses in that specific account. However, it is generic across all buses
+within that account (not scoped to a single bus). This is a deliberate trade-off:
+one role per repo account keeps management simple and avoids role proliferation,
+while the cross-account boundary still limits blast radius to the pipeline
+account. An attacker who compromises this role can only inject EventBridge events
+into the pipeline account — they cannot read code, access state, or invoke
+pipelines directly.
 
 ### CodeBuild Role
 
@@ -109,6 +115,28 @@ resolves at plan time. Treat it like sensitive data:
   "Resource": "arn:aws:s3:::my-org-codepipeline-artifacts-444455556666/*"
 }
 ```
+
+### Cross-Account Artifact Access
+
+The artifact bucket policy must grant cross-account read/write access to the
+event forwarder role in the repo account. This policy is managed via
+`iam/grant-artifact-access.sh` and restricts access to the specific forwarder
+role ARN — not wildcard principals:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": {
+    "AWS": "arn:aws:iam::<repo-account-id>:role/EventForwarderRole"
+  },
+  "Action": ["s3:GetObject", "s3:PutObject"],
+  "Resource": "arn:aws:s3:::my-org-codepipeline-artifacts-444455556666/*"
+}
+```
+
+This allows the repo account's forwarder to write plan artifacts and read
+apply results while keeping the bucket locked down to only the necessary
+cross-account principal.
 
 ### KMS Key Rotation
 

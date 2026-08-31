@@ -26,7 +26,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 ACCOUNT_ID=""
 REPO_ACCOUNT_ID=""
-REGION="us-east-1"
+REGION="ap-south-1"
 PIPELINE_ROLE_NAME="TerraformPipelineServiceRole"
 CODEBUILD_ROLE_NAME="TerraformCodeBuildRole"
 ARTIFACT_BUCKET=""

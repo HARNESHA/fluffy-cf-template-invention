@@ -1,6 +1,6 @@
 {
   "_comment": "Example CodeCommit Repository State Change event as published by AWS EventBridge.",
-  "_comment2": "This is the event shape that Template 2 (codecommit-event-forwarder.yaml) captures",
+  "_comment2": "This is the event shape that setup-event-forwarder.sh captures",
   "_comment3": "on the DEFAULT event bus in the repository account and forwards to the Pipeline",
   "_comment4": "account's custom Event Bus. Template 1's PipelineTriggerRule matches this shape.",
 

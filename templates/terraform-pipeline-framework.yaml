@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  terraform-pipeline-framework.yaml | Version: 3.0.0
+  terraform-pipeline-framework.yaml | Version: 4.0.0
   Enterprise-grade reusable Terraform CI/CD pipeline framework.
   Deploys into the Pipeline Account via CloudFormation StackSets.
   Pipeline always runs: Source -> Plan -> [Optional Approval] -> Apply.
@@ -303,8 +303,6 @@ Resources:
   PlanBuildLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: EnableCloudWatch
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub "/codebuild/${ProjectName}-${Environment}-tf-plan"
       RetentionInDays: !Ref LogRetentionDays
@@ -319,8 +317,6 @@ Resources:
   ApplyBuildLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: EnableCloudWatch
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub "/codebuild/${ProjectName}-${Environment}-tf-apply"
       RetentionInDays: !Ref LogRetentionDays
@@ -335,8 +331,6 @@ Resources:
   PipelineEventLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: EnableCloudWatch
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub "/aws/codepipeline/${ProjectName}-${Environment}"
       RetentionInDays: !Ref LogRetentionDays
@@ -883,7 +877,7 @@ Outputs:
       Name: !Sub "${AWS::StackName}-PipelineUrl"
 
   EventBusArn:
-    Description: ARN of the custom EventBridge Event Bus - pass this to Template 2
+    Description: ARN of the custom EventBridge Event Bus - pass this to setup-event-forwarder.sh
     Value: !GetAtt TerraformPipelineEventBus.Arn
     Export:
       Name: !Sub "${AWS::StackName}-EventBusArn"

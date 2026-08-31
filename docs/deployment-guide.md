@@ -36,7 +36,7 @@ Used by CodePipeline for storing source code, plan binaries, and build logs.
 ```bash
 aws s3api create-bucket \
   --bucket my-org-codepipeline-artifacts-444455556666 \
-  --region us-east-1
+  --region ap-south-1
 
 aws s3api put-bucket-versioning \
   --bucket my-org-codepipeline-artifacts-444455556666 \
@@ -55,7 +55,7 @@ Stores Terraform remote state files.
 ```bash
 aws s3api create-bucket \
   --bucket my-org-terraform-state-prod \
-  --region us-east-1
+  --region ap-south-1
 
 aws s3api put-bucket-versioning \
   --bucket my-org-terraform-state-prod \
@@ -91,7 +91,7 @@ cd org-stackset-template
 
 Produces ARNs like `arn:aws:iam::444455556666:role/teams/sre/TerraformPipelineServiceRole` —
 use those (including the path) in the `PipelineRoleArn` / `CodeBuildRoleArn`
-parameters when deploying Template 1, and in the repo policy principal in Step 3.2.
+parameters when deploying Template 1, and in the repo policy principal in Step 5.
 Valid formats: `/xyz/`, `/teams/sre/`, `/service-role/`. A bare `/` (or omitting
 `--role-path`) creates roles at the IAM root.
 
@@ -178,7 +178,7 @@ aws cloudformation deploy \
   --stack-name my-project-prod-tf-pipeline \
   --parameter-overrides file://parameters/pipeline-mypipeline.json \
   --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1 \
+  --region ap-south-1 \
   --profile pipeline-account
 ```
 
@@ -213,32 +213,69 @@ Save this ARN — you'll need it for Step 3.
 
 ---
 
-## Step 3: Deploy Template 2 — Repository Account
+## Step 3: Set Up Event Forwarding (Repo Account)
 
-### 3.1 Prepare Forwarder Parameter File
+### 3.1 Capture EventBusArn from Step 2
 
 ```bash
-cp parameters/forwarder.json parameters/forwarder-mypipeline.json
+EVENT_BUS_ARN=$(aws cloudformation describe-stacks \
+  --stack-name my-project-prod-tf-pipeline \
+  --query "Stacks[0].Outputs[?OutputKey=='EventBusArn'].OutputValue" \
+  --output text)
+
+echo "Event Bus ARN: $EVENT_BUS_ARN"
 ```
 
-Edit `parameters/forwarder-mypipeline.json`:
+### 3.2 Run setup-event-forwarder.sh
 
-```json
-[
-  {"ParameterKey": "RepositoryName", "ParameterValue": "my-terraform-repo"},
-  {"ParameterKey": "BranchName", "ParameterValue": "main"},
-  {"ParameterKey": "PipelineAccountId", "ParameterValue": "444455556666"},
-  {"ParameterKey": "PipelineEventBusArn", "ParameterValue": "EVENT_BUS_ARN_FROM_STEP_2"},
-  {"ParameterKey": "EnableForwarding", "ParameterValue": "true"},
-  {"ParameterKey": "ForwardDeleteEvents", "ParameterValue": "false"},
-  {"ParameterKey": "ProjectName", "ParameterValue": "my-project"},
-  {"ParameterKey": "Environment", "ParameterValue": "prod"},
-  {"ParameterKey": "Owner", "ParameterValue": "platform-engineering"},
-  {"ParameterKey": "CostCenter", "ParameterValue": "CC-1042"}
-]
+Run the CLI script in the **Repository Account** to create a generic
+EventBridge rule and IAM role that forward CodeCommit events to the
+pipeline account's event bus. One role is created per repo account and
+forwards events for all repositories in that account.
+
+```bash
+./iam/setup-event-forwarder.sh \
+  --pipeline-account-id 444455556666 \
+  --event-bus-arn "$EVENT_BUS_ARN" \
+  --repository-name my-terraform-repo \
+  --branch-name main \
+  --region ap-south-1 \
+  --profile repo-account
 ```
 
-### 3.2 Grant Pipeline Source Access (Repo Account)
+### 3.3 Verify Forwarder Setup
+
+```bash
+# Confirm the EventBridge rule exists
+aws events describe-rule \
+  --name "CodeCommitForwarder-my-terraform-repo-main" \
+  --region ap-south-1 \
+  --profile repo-account
+
+# Confirm the forwarder IAM role exists
+aws iam get-role \
+  --role-name CodeCommitEventForwarderRole \
+  --profile repo-account
+```
+
+---
+
+## Step 4: Grant Artifact Bucket Access (Pipeline Account)
+
+Run the CLI script in the **Pipeline Account** to grant the forwarder
+role (from the repo account) cross-account access to the artifact bucket.
+
+```bash
+./iam/grant-artifact-access.sh \
+  --artifact-bucket my-org-codepipeline-artifacts-444455556666 \
+  --forwarder-role-arn "arn:aws:iam::111122223333:role/CodeCommitEventForwarderRole" \
+  --pipeline-account-id 444455556666 \
+  --profile pipeline-account
+```
+
+---
+
+## Step 5: Grant Pipeline Source Access (Repo Account)
 
 The pipeline in the Pipeline Account must be able to pull this repository
 cross-account. CodeCommit repository policies can't be created with
@@ -272,7 +309,7 @@ EOF
 aws codecommit put-repository-policy \
   --repository-name my-terraform-repo \
   --policy-content file:///tmp/repo-policy.json \
-  --region us-east-1 \
+  --region ap-south-1 \
   --profile repo-account
 ```
 
@@ -285,37 +322,16 @@ ARN, re-run:
 ./iam/create-iam-roles.sh \
   --account-id 444455556666 \
   --repo-account-id 111122223333 \
-  --region us-east-1 \
+  --region ap-south-1 \
   --artifact-bucket my-org-codepipeline-artifacts-444455556666 \
   --state-bucket my-org-terraform-state-prod
 ```
 
-### 3.3 Deploy
-
-```bash
-aws cloudformation deploy \
-  --template-file templates/codecommit-event-forwarder.yaml \
-  --stack-name my-repo-main-event-forwarder \
-  --parameter-overrides file://parameters/forwarder-mypipeline.json \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1 \
-  --profile repo-account
-```
-
-### 3.4 Verify
-
-```bash
-aws cloudformation describe-stacks \
-  --stack-name my-repo-main-event-forwarder \
-  --query "Stacks[0].Outputs" \
-  --output table
-```
-
 ---
 
-## Step 4: Configure the Terraform Repository
+## Step 6: Configure the Terraform Repository
 
-### 4.1 Copy Buildspec Files
+### 6.1 Copy Buildspec Files
 
 Copy both buildspec files to the **root** of your Terraform repository:
 
@@ -324,7 +340,7 @@ cp buildspec/buildspec-plan.yml /path/to/your-terraform-repo/
 cp buildspec/buildspec-apply.yml /path/to/your-terraform-repo/
 ```
 
-### 4.2 Commit and Push
+### 6.2 Commit and Push
 
 ```bash
 cd /path/to/your-terraform-repo
@@ -337,9 +353,9 @@ The pipeline triggers automatically on push.
 
 ---
 
-## Step 5: Verify the Pipeline
+## Step 7: Verify the Pipeline
 
-### 5.1 Check Pipeline Execution
+### 7.1 Check Pipeline Execution
 
 ```bash
 PIPELINE_NAME=$(aws cloudformation describe-stacks \
@@ -354,13 +370,13 @@ aws codepipeline list-executions \
   --output table
 ```
 
-### 5.2 Open Pipeline Console
+### 7.2 Open Pipeline Console
 
 ```
-https://us-east-1.console.aws.amazon.com/codesuite/codepipeline/pipelines/${PIPELINE_NAME}/view
+https://ap-south-1.console.aws.amazon.com/codesuite/codepipeline/pipelines/${PIPELINE_NAME}/view
 ```
 
-### 5.3 Check Build Logs (if issues)
+### 7.3 Check Build Logs (if issues)
 
 ```bash
 aws codebuild list-builds-for-project \
@@ -397,14 +413,29 @@ Then redeploy the stack.
 
 ### Adding a New Repository
 
-1. Apply the CodeCommit repository policy for the new repo (Step 3.2)
-2. Deploy Template 2 in the repository account with the new repo details
-3. Copy buildspec files to the new repository
-4. Push to trigger the pipeline
+1. Apply the CodeCommit repository policy for the new repo (Step 5)
+2. Run `setup-event-forwarder.sh` in the repository account (Step 3.2)
+3. Run `grant-artifact-access.sh` in the pipeline account (Step 4)
+4. Copy buildspec files to the new repository
+5. Push to trigger the pipeline
 
 ### Pausing Event Forwarding
 
-Set `EnableForwarding` to `false` and redeploy Template 2.
+Remove or disable the EventBridge rule created by `setup-event-forwarder.sh`
+in the repository account:
+
+```bash
+aws events remove-targets \
+  --rule "CodeCommitForwarder-my-terraform-repo-main" \
+  --ids "1" \
+  --region ap-south-1 \
+  --profile repo-account
+
+aws events delete-rule \
+  --name "CodeCommitForwarder-my-terraform-repo-main" \
+  --region ap-south-1 \
+  --profile repo-account
+```
 
 ---
 
@@ -414,7 +445,9 @@ Set `EnableForwarding` to `false` and redeploy Template 2.
 |---|---|
 | Pipeline fails, CodeBuild never runs | **Cross-account Source stage**: repo account must have a CodeCommit repository policy (`put-repository-policy`) granting the pipeline role, and the pipeline role's codecommit policy must target the repo account's ARN |
 | Rule invoked but pipeline not triggered | **Missing `codepipeline:StartPipelineExecution`** on the pipeline role. Rule runs handshake with this role, but `StartPipelineExecution` fails with AccessDenied |
-| Pipeline not triggering at all | EventBridge rule is ENABLED, IAM role has `events:PutEvents`, bus policy allows repo account |
+| Pipeline not triggering at all | EventBridge rule is enabled (verify with `aws events describe-rule`), forwarder IAM role has `events:PutEvents`, artifact bucket policy grants the forwarder role |
+| Forwarder not created | Run `setup-event-forwarder.sh` in the repo account and check IAM role / EventBridge rule exist |
+| Artifact bucket access denied | Run `grant-artifact-access.sh` in the pipeline account to grant the forwarder role cross-account S3 access |
 | Plan fails | CodeBuild logs, S3 state bucket access, Terraform version validity |
 | Apply fails | Plan binary in artifacts, execution role trust policy, execution role permissions |
 | SNS not received | Topic ARN correct, email subscription confirmed, EventBridge rule logging |
@@ -432,7 +465,7 @@ cat > /tmp/codepipeline-start.json << 'EOF'
       "Sid": "CodePipelineStartExecution",
       "Effect": "Allow",
       "Action": "codepipeline:StartPipelineExecution",
-      "Resource": "arn:aws:codepipeline:us-east-1:444455556666:my-project-prod-*"
+      "Resource": "arn:aws:codepipeline:ap-south-1:444455556666:my-project-prod-*"
     }
   ]
 }
@@ -449,7 +482,7 @@ Verify the rule sees the fix:
 ```bash
 # Confirm the event reached the rule and the invocation result
 aws events list-rule-names-by-target \
-  --target-arn "arn:aws:codepipeline:us-east-1:444455556666:my-project-prod-main-tf-pipeline"
+  --target-arn "arn:aws:codepipeline:ap-south-1:444455556666:my-project-prod-main-tf-pipeline"
 
 # Watch the rule's invocations in CloudWatch (Metrics → events → InvokedInvocations)
 ```
@@ -491,7 +524,7 @@ EOF
 aws codecommit put-repository-policy \
   --repository-name my-terraform-repo \
   --policy-content file:///tmp/repo-policy.json \
-  --region us-east-1 \
+  --region ap-south-1 \
   --profile repo-account
 ```
 
@@ -501,7 +534,7 @@ The pipeline role's `codecommit` Resource ARN must reference the **repo account*
 not the pipeline account:
 
 ```json
-"Resource": "arn:aws:codecommit:us-east-1:111122223333:my-terraform-repo"
+"Resource": "arn:aws:codecommit:ap-south-1:111122223333:my-terraform-repo"
 ```
 
 If your role still scopes it to `444455556666` (or uses `REPO_ACCOUNT_ID` with
@@ -533,13 +566,21 @@ Step 2: Deploy Template 1 (Pipeline Account)
          └── Capture Event Bus ARN
               │
               ▼
-Step 3: Deploy Template 2 (Repository Account)
-         └── Uses Event Bus ARN from Step 2
+Step 3: Set Up Event Forwarding (Repo Account)
+         └── Run setup-event-forwarder.sh using Event Bus ARN
               │
               ▼
-Step 4: Copy Buildspecs to Terraform Repo
+Step 4: Grant Artifact Bucket Access (Pipeline Account)
+         └── Run grant-artifact-access.sh
+              │
+              ▼
+Step 5: Grant Pipeline Source Access (Repo Account)
+         └── Apply CodeCommit repository policy
+              │
+              ▼
+Step 6: Copy Buildspecs to Terraform Repo
          └── Push triggers pipeline
               │
               ▼
-Step 5: Verify Pipeline Execution
+Step 7: Verify Pipeline Execution
 ```

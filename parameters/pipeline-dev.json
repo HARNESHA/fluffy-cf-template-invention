@@ -9,7 +9,7 @@
   },
   {
     "ParameterKey": "Environment",
-    "ParameterValue": "test"
+    "ParameterValue": "dev"
   },
   {
     "ParameterKey": "RepositoryName",
