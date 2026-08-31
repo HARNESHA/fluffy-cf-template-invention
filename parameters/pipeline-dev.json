@@ -5,7 +5,7 @@
   },
   {
     "ParameterKey": "PipelineName",
-    "ParameterValue": "org-tf-dms-test"
+    "ParameterValue": "org-tf-test"
   },
   {
     "ParameterKey": "Environment",
@@ -37,7 +37,7 @@
   },
   {
     "ParameterKey": "BackendBucket",
-    "ParameterValue": "my-org-terraform-state-prodddd"
+    "ParameterValue": "826136930409-terraform-state-prod"
   },
   {
     "ParameterKey": "BackendKey",
@@ -45,7 +45,7 @@
   },
   {
     "ParameterKey": "BackendRegion",
-    "ParameterValue": "us-east-1"
+    "ParameterValue": "ap-south-1"
   },
   {
     "ParameterKey": "EnableApproval",
@@ -65,7 +65,7 @@
   },
   {
     "ParameterKey": "ArtifactBucket",
-    "ParameterValue": "my-org-codepipeline-artifacts-444455556666"
+    "ParameterValue": "my-org-codepipeline-artifacts-826136930409"
   },
   {
     "ParameterKey": "BuildImage",
