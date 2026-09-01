@@ -4,20 +4,16 @@
     "ParameterValue": "org-infra"
   },
   {
-    "ParameterKey": "PipelineName",
-    "ParameterValue": "org-tf-test"
-  },
-  {
     "ParameterKey": "Environment",
     "ParameterValue": "dev"
   },
   {
-    "ParameterKey": "RepositoryName",
-    "ParameterValue": "my-terraform-repo"
+    "ParameterKey": "RepositoryProvider",
+    "ParameterValue": "codecommit"
   },
   {
-    "ParameterKey": "RepositoryAccountId",
-    "ParameterValue": "826136930409"
+    "ParameterKey": "RepositoryName",
+    "ParameterValue": "my-terraform-repo"
   },
   {
     "ParameterKey": "RepositoryRegion",
@@ -26,6 +22,10 @@
   {
     "ParameterKey": "BranchName",
     "ParameterValue": "main"
+  },
+  {
+    "ParameterKey": "CodeStarConnectionArn",
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "TerraformDirectory",
@@ -45,19 +45,27 @@
   },
   {
     "ParameterKey": "BackendRegion",
-    "ParameterValue": "ap-south-1"
+    "ParameterValue": "us-east-1"
   },
   {
     "ParameterKey": "EnableApproval",
     "ParameterValue": "true"
   },
   {
+    "ParameterKey": "CreateIamRoles",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "RolePath",
+    "ParameterValue": "/application_role/"
+  },
+  {
     "ParameterKey": "PipelineRoleArn",
-    "ParameterValue": "arn:aws:iam::826136930409:role/application_role/TerraformPipelineServiceRole"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "CodeBuildRoleArn",
-    "ParameterValue": "arn:aws:iam::826136930409:role/application_role/TerraformCodeBuildRole"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "ExecutionRoleArn",
@@ -65,7 +73,11 @@
   },
   {
     "ParameterKey": "ArtifactBucket",
-    "ParameterValue": "my-org-codepipeline-artifacts-826136930409"
+    "ParameterValue": "tf-artifacts-826136930409"
+  },
+  {
+    "ParameterKey": "ArtifactPrefix",
+    "ParameterValue": "terraform-artifacts"
   },
   {
     "ParameterKey": "BuildImage",

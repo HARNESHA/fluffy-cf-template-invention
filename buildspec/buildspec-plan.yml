@@ -1,36 +1,32 @@
 # =============================================================================
 # buildspec-plan.yml
-# Terraform Plan Buildspec
-# Used by: TerraformPlanProject (PLAN_ONLY and SEPARATE_PLAN_APPLY modes)
+# Terraform Plan Buildspec (approval/pipeline path)
+# Used by: TerraformPlanProject (CODEPIPELINE source)
 #
 # Stages:
 #   install   - Install Terraform at pinned version
 #   pre_build - Assume execution role (if configured), set env vars
 #   build     - terraform init → validate → plan → generate plan.txt
-#   post_build - Upload artifacts to S3, publish SNS notification
+#   post_build - Upload plan binary + plan.txt to S3, publish SNS notification
 #
-# Environment Variables (injected by CodeBuild project + pipeline):
-#   TF_VERSION              Terraform version to install
-#   TF_DIR                  Relative path to terraform root module
-#   TF_BACKEND_BUCKET       S3 bucket for remote state
-#   TF_BACKEND_KEY          S3 key for remote state file
-#   TF_BACKEND_REGION       Region of state bucket
-#   PROJECT_NAME            Project identifier
-#   ENVIRONMENT             dev / staging / prod / shared
-#   BRANCH_NAME             Source branch
-#   ARTIFACT_BUCKET         S3 bucket for plan artifacts
-#   SNS_TOPIC_ARN           SNS topic for notifications (or "DISABLED")
-#   TF_EXECUTION_ROLE_ARN   Role to assume before running terraform (or "NONE")
-#   PIPELINE_EXECUTION_ID   Injected by CodePipeline
-#   COMMIT_ID               Injected by CodePipeline
-#   PIPELINE_NAME           Injected by CodePipeline
+# The plan binary is shared with the Apply stage via a deterministic S3 key,
+# NOT via CodePipeline artifacts. Apply downloads the exact same key by commit.
+#
+# S3 key scheme (shared with Apply + Auto buildspecs):
+#   {ARTIFACT_PREFIX}/{REPOSITORY_NAME}/{ENVIRONMENT}/{BRANCH_NAME}/plans/{COMMIT_ID}/
+#     tfplan.binary
+#     plan.txt
+#
+# Environment Variables (injected by the CodeBuild project):
+#   TF_VERSION, TF_DIR, TF_BACKEND_BUCKET, TF_BACKEND_KEY, TF_BACKEND_REGION,
+#   PROJECT_NAME, ENVIRONMENT, REPOSITORY_NAME, BRANCH_NAME, COMMIT_ID,
+#   ARTIFACT_BUCKET, ARTIFACT_PREFIX, SNS_TOPIC_ARN, TF_EXECUTION_ROLE_ARN
 # =============================================================================
 
 version: 0.2
 
 env:
   shell: bash
-  # Export these as pipeline variables for downstream stages
   exported-variables:
     - RESOLVED_COMMIT_ID
     - PLAN_ARTIFACT_KEY
@@ -65,8 +61,14 @@ phases:
   pre_build:
     commands:
       - echo "=== [PRE_BUILD] Configuring environment ==="
-      - export RESOLVED_COMMIT_ID="${COMMIT_ID:-$(git rev-parse HEAD)}"
-      - export PLAN_ARTIFACT_KEY="${PROJECT_NAME}/${ENVIRONMENT}/${RESOLVED_COMMIT_ID}/tfplan.binary"
+      - export RESOLVED_COMMIT_ID="${COMMIT_ID}"
+      - |
+        if [ -z "${RESOLVED_COMMIT_ID}" ] || [ "${RESOLVED_COMMIT_ID}" = "undefined" ]; then
+          echo "COMMIT_ID not injected by pipeline - falling back to repo HEAD"
+          RESOLVED_COMMIT_ID=$(git -C "${CODEBUILD_SRC_DIR}/SourceOutput" rev-parse HEAD)
+          export RESOLVED_COMMIT_ID
+        fi
+      - export PLAN_ARTIFACT_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
       - export BUILD_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       - export AWS_REGION="${AWS_DEFAULT_REGION}"
       - echo "Project      : ${PROJECT_NAME}"
@@ -76,6 +78,7 @@ phases:
       - echo "TF Directory : ${TF_DIR}"
       - echo "Pipeline     : ${PIPELINE_NAME}"
       - echo "Execution ID : ${PIPELINE_EXECUTION_ID}"
+      - echo "Plan Key     : s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/tfplan.binary"
       # Assume Terraform execution role if configured
       - |
         if [ "${TF_EXECUTION_ROLE_ARN}" != "NONE" ] && [ -n "${TF_EXECUTION_ROLE_ARN}" ]; then
@@ -101,7 +104,7 @@ phases:
   build:
     commands:
       - echo "=== [BUILD] Starting Terraform workflow ==="
-      - cd "${CODEBUILD_SRC_DIR}/${TF_DIR}"
+      - cd "${CODEBUILD_SRC_DIR}/SourceOutput/${TF_DIR}"
 
       # terraform init
       - echo "--- terraform init ---"
@@ -125,16 +128,16 @@ phases:
       - |
         terraform plan \
           -var="environment=${ENVIRONMENT}" \
-          -out="${CODEBUILD_SRC_DIR}/tfplan.binary" \
+          -out="${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
           -input=false \
           -no-color \
-          2>&1 | tee "${CODEBUILD_SRC_DIR}/plan.txt"
+          2>&1 | tee "${CODEBUILD_SRC_DIR}/work/plan.txt"
       - echo "plan complete"
 
       # Generate a short summary (resource counts)
       - echo "--- generating plan summary ---"
       - |
-        PLAN_SUMMARY=$(grep -E "^Plan:|^No changes\." "${CODEBUILD_SRC_DIR}/plan.txt" \
+        PLAN_SUMMARY=$(grep -E "^Plan:|^No changes\." "${CODEBUILD_SRC_DIR}/work/plan.txt" \
           | head -1 \
           | sed 's/[[:space:]]*$//' \
           || echo "Plan completed - see plan.txt for details")
@@ -144,49 +147,46 @@ phases:
       - echo "=== [BUILD] Terraform plan workflow complete ==="
 
   # ---------------------------------------------------------------------------
-  # POST_BUILD - Upload artifacts, publish SNS notification
+  # POST_BUILD - Upload plan artifacts to S3, publish SNS notification
   # ---------------------------------------------------------------------------
   post_build:
     commands:
       - echo "=== [POST_BUILD] Uploading artifacts ==="
       - export BUILD_STATUS="${CODEBUILD_BUILD_SUCCEEDING:-0}"
+      - mkdir -p "${CODEBUILD_SRC_DIR}/work"
 
-      # Upload binary plan to S3 (used by Apply stage)
+      # Upload binary plan + plan.txt to S3 (consumed by Apply stage)
       - |
-        aws s3 cp "${CODEBUILD_SRC_DIR}/tfplan.binary" \
-          "s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}" \
+        aws s3 cp "${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
+          "s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/tfplan.binary" \
           --sse aws:kms \
           --no-progress
-        echo "Plan binary uploaded: s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}"
-
-      # Upload human-readable plan text
-      - |
-        PLAN_TXT_KEY="${PROJECT_NAME}/${ENVIRONMENT}/${RESOLVED_COMMIT_ID}/plan.txt"
-        aws s3 cp "${CODEBUILD_SRC_DIR}/plan.txt" \
-          "s3://${ARTIFACT_BUCKET}/${PLAN_TXT_KEY}" \
+        aws s3 cp "${CODEBUILD_SRC_DIR}/work/plan.txt" \
+          "s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/plan.txt" \
           --sse aws:kms \
           --no-progress
-        export PLAN_TXT_URL="https://s3.console.aws.amazon.com/s3/object/${ARTIFACT_BUCKET}?prefix=${PLAN_TXT_KEY}"
-        echo "Plan text uploaded: ${PLAN_TXT_URL}"
+        echo "Plan uploaded: s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/"
+        export PLAN_TXT_URL="https://s3.console.aws.amazon.com/s3/object/${ARTIFACT_BUCKET}?prefix=${PLAN_ARTIFACT_KEY}/plan.txt"
 
       # Publish SNS notification with plan details
       - |
         if [ "${SNS_TOPIC_ARN}" != "DISABLED" ] && [ -n "${SNS_TOPIC_ARN}" ] && [ "${BUILD_STATUS}" = "1" ]; then
           PIPELINE_URL="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${PIPELINE_NAME}/view"
-          MESSAGE="TERRAFORM PLAN READY FOR REVIEW
-=========================================
-Project       : ${PROJECT_NAME}
-Environment   : ${ENVIRONMENT}
-Repository    : ${REPOSITORY_NAME}
-Branch        : ${BRANCH_NAME}
-Commit        : ${RESOLVED_COMMIT_ID}
------------------------------------------
-Plan Summary  : ${PLAN_SUMMARY}
------------------------------------------
-Pipeline      : ${PIPELINE_URL}
-Plan Artifact : ${PLAN_TXT_URL}
-=========================================
-Action Required: Review the plan and approve or reject in CodePipeline."
+          MESSAGE=$(printf '%s\n' \
+            "TERRAFORM PLAN READY FOR REVIEW" \
+            "=========================================" \
+            "Project       : ${PROJECT_NAME}" \
+            "Environment   : ${ENVIRONMENT}" \
+            "Repository    : ${REPOSITORY_NAME}" \
+            "Branch        : ${BRANCH_NAME}" \
+            "Commit        : ${RESOLVED_COMMIT_ID}" \
+            "-----------------------------------------" \
+            "Plan Summary  : ${PLAN_SUMMARY}" \
+            "-----------------------------------------" \
+            "Pipeline      : ${PIPELINE_URL}" \
+            "Plan Artifact : ${PLAN_TXT_URL}" \
+            "=========================================" \
+            "Action Required: Review the plan and approve or reject in CodePipeline.")
           aws sns publish \
             --topic-arn "${SNS_TOPIC_ARN}" \
             --subject "REVIEW REQUIRED: Terraform Plan - ${PROJECT_NAME} (${ENVIRONMENT})" \
@@ -199,16 +199,6 @@ Action Required: Review the plan and approve or reject in CodePipeline."
         fi
 
       - echo "=== [POST_BUILD] Complete ==="
-
-# ---------------------------------------------------------------------------
-# ARTIFACTS - Pass plan binary and text to downstream stages
-# ---------------------------------------------------------------------------
-artifacts:
-  files:
-    - tfplan.binary
-    - plan.txt
-  name: TerraformPlanArtifact
-  discard-paths: "no"
 
 # ---------------------------------------------------------------------------
 # CACHE - Speed up subsequent builds by caching Terraform providers

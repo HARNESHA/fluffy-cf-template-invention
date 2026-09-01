@@ -1,23 +1,19 @@
 [
   {
     "ParameterKey": "ProjectName",
-    "ParameterValue": "org--infra"
-  },
-  {
-    "ParameterKey": "PipelineName",
-    "ParameterValue": "org-tf-dms-cloudtrail-test"
+    "ParameterValue": "org-infra"
   },
   {
     "ParameterKey": "Environment",
     "ParameterValue": "test"
   },
   {
-    "ParameterKey": "RepositoryName",
-    "ParameterValue": "org-tf-infra"
+    "ParameterKey": "RepositoryProvider",
+    "ParameterValue": "codecommit"
   },
   {
-    "ParameterKey": "RepositoryAccountId",
-    "ParameterValue": "677748260495"
+    "ParameterKey": "RepositoryName",
+    "ParameterValue": "org-tf-infra"
   },
   {
     "ParameterKey": "RepositoryRegion",
@@ -26,6 +22,10 @@
   {
     "ParameterKey": "BranchName",
     "ParameterValue": "test"
+  },
+  {
+    "ParameterKey": "CodeStarConnectionArn",
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "TerraformDirectory",
@@ -37,7 +37,7 @@
   },
   {
     "ParameterKey": "BackendBucket",
-    "ParameterValue": "-remote-state--test-acct-test"
+    "ParameterValue": "my-org-terraform-state-test"
   },
   {
     "ParameterKey": "BackendKey",
@@ -52,12 +52,20 @@
     "ParameterValue": "false"
   },
   {
+    "ParameterKey": "CreateIamRoles",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "RolePath",
+    "ParameterValue": "/application_role/"
+  },
+  {
     "ParameterKey": "PipelineRoleArn",
-    "ParameterValue": "arn:aws:iam::677748260495:role/application_role/TerraformPipelineServiceRole"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "CodeBuildRoleArn",
-    "ParameterValue": "arn:aws:iam::677748260495:role/application_role/TerraformCodeBuildRole"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "ExecutionRoleArn",
@@ -65,7 +73,11 @@
   },
   {
     "ParameterKey": "ArtifactBucket",
-    "ParameterValue": "org-codepipeline-artifacts-677748260495"
+    "ParameterValue": "tf-artifacts-677748260495"
+  },
+  {
+    "ParameterKey": "ArtifactPrefix",
+    "ParameterValue": "terraform-artifacts"
   },
   {
     "ParameterKey": "BuildImage",

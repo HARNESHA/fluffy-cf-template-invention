@@ -1,0 +1,154 @@
+# =============================================================================
+# buildspec-auto.yml
+# Terraform Auto-Deploy Buildspec (non-approval mode)
+# Used by: TerraformAutoProject (NO_SOURCE)
+#
+# Self-contained: clones the repo, plans, guards against destroy/replace,
+# and auto-applies. No manual approval stage.
+#
+# IMPORTANT: This auto-apply path BLOCKS destructive changes. If the plan
+# contains "must be replaced" or "will be destroyed" actions, the build fails
+# and nothing is applied. Use EnableApproval=true for environments that need
+# manual review.
+#
+# S3 key scheme (shared with Plan/Apply buildspecs):
+#   {ARTIFACT_PREFIX}/{REPOSITORY_NAME}/{ENVIRONMENT}/{BRANCH_NAME}/plans/{COMMIT_ID}/
+#     tfplan.binary
+#     plan.txt
+#   {ARTIFACT_PREFIX}/{REPOSITORY_NAME}/{ENVIRONMENT}/{BRANCH_NAME}/logs/{CODEBUILD_BUILD_ID}/
+#     apply.txt
+#
+# Environment Variables (injected by the CodeBuild project):
+#   TF_VERSION, TF_DIR, TF_BACKEND_BUCKET, TF_BACKEND_KEY, TF_BACKEND_REGION,
+#   PROJECT_NAME, ENVIRONMENT, REPOSITORY_PROVIDER, REPOSITORY_NAME,
+#   REPOSITORY_REGION, BRANCH_NAME, CODE_STAR_CONNECTION_ARN,
+#   ARTIFACT_BUCKET, ARTIFACT_PREFIX, SNS_TOPIC_ARN, TF_EXECUTION_ROLE_ARN
+# =============================================================================
+
+version: 0.2
+
+env:
+  shell: bash
+  exported-variables:
+    - RESOLVED_COMMIT_ID
+    - APPLY_STATUS
+
+phases:
+
+  # ---------------------------------------------------------------------------
+  # INSTALL - Download and install Terraform at the pinned version
+  # ---------------------------------------------------------------------------
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - |
+        TF_ZIP="terraform_${TF_VERSION}_linux_amd64.zip"
+        curl -sSfL "https://releases.hashicorp.com/terraform/${TF_VERSION}/${TF_ZIP}" -o "/tmp/${TF_ZIP}"
+        curl -sSfL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_SHA256SUMS" -o /tmp/terraform_SHA256SUMS
+        cd /tmp && grep "${TF_ZIP}" terraform_SHA256SUMS | sha256sum --check -
+        unzip -q "/tmp/${TF_ZIP}" -d /tmp/terraform-bin
+        mv /tmp/terraform-bin/terraform /usr/local/bin/terraform
+        chmod +x /usr/local/bin/terraform
+        terraform version
+
+  # ---------------------------------------------------------------------------
+  # PRE_BUILD - Clone repo, assume execution role
+  # ---------------------------------------------------------------------------
+  pre_build:
+    commands:
+      - |
+        mkdir -p "${CODEBUILD_SRC_DIR}/work"
+        if [ "${REPOSITORY_PROVIDER}" = "codecommit" ]; then
+          git config --global credential.helper '!aws codecommit credential-helper $@'
+          git config --global credential.UseHttpPath true
+          REPO_URL="https://git-codecommit.${REPOSITORY_REGION}.amazonaws.com/v1/repos/${REPOSITORY_NAME}"
+        else
+          REPO_URL="codeconnections::${REPOSITORY_REGION}::${CODE_STAR_CONNECTION_ARN}::https://github.com/${REPOSITORY_NAME}"
+        fi
+        echo "Cloning ${REPOSITORY_NAME} branch ${BRANCH_NAME}"
+        git clone --branch "${BRANCH_NAME}" --single-branch "${REPO_URL}" "${CODEBUILD_SRC_DIR}/work/repo"
+        cd "${CODEBUILD_SRC_DIR}/work/repo"
+        export RESOLVED_COMMIT_ID=$(git rev-parse HEAD)
+        export AWS_REGION="${AWS_DEFAULT_REGION:-${REPOSITORY_REGION}}"
+        echo "Commit: ${RESOLVED_COMMIT_ID}"
+      - |
+        if [ "${TF_EXECUTION_ROLE_ARN}" != "NONE" ] && [ -n "${TF_EXECUTION_ROLE_ARN}" ]; then
+          echo "Assuming execution role: ${TF_EXECUTION_ROLE_ARN}"
+          CREDS=$(aws sts assume-role \
+            --role-arn "${TF_EXECUTION_ROLE_ARN}" \
+            --role-session-name "TerraformAuto-${PROJECT_NAME}-${ENVIRONMENT}" \
+            --duration-seconds 7200 \
+            --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+            --output text)
+          export AWS_ACCESS_KEY_ID=$(echo $CREDS | awk '{print $1}')
+          export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | awk '{print $2}')
+          export AWS_SESSION_TOKEN=$(echo $CREDS | awk '{print $3}')
+          echo "Successfully assumed execution role"
+        fi
+
+  # ---------------------------------------------------------------------------
+  # BUILD - init, validate, plan, guard against destroy/replace, auto-apply
+  # ---------------------------------------------------------------------------
+  build:
+    commands:
+      - |
+        cd "${CODEBUILD_SRC_DIR}/work/repo/${TF_DIR}"
+        echo "--- terraform init ---"
+        terraform init \
+          -backend-config="bucket=${TF_BACKEND_BUCKET}" \
+          -backend-config="key=${TF_BACKEND_KEY}" \
+          -backend-config="region=${TF_BACKEND_REGION}" \
+          -backend-config="encrypt=true" \
+          -input=false -no-color
+        echo "--- terraform validate ---"
+        terraform validate -no-color
+        echo "--- terraform plan ---"
+        terraform plan -var="environment=${ENVIRONMENT}" \
+          -out="${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
+          -input=false -no-color 2>&1 | tee "${CODEBUILD_SRC_DIR}/work/plan.txt"
+        echo "--- Guarding against destroy/replace ---"
+        if grep -E "must be replaced|will be destroyed" "${CODEBUILD_SRC_DIR}/work/plan.txt" ; then
+          echo "ERROR: Plan contains destroy/replace actions. Auto-apply blocked."
+          echo "Set EnableApproval=true for this environment and review manually."
+          exit 1
+        fi
+        echo "No destructive changes detected - applying."
+        terraform apply -input=false -no-color \
+          "${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
+          2>&1 | tee "${CODEBUILD_SRC_DIR}/work/apply.txt"
+
+  # ---------------------------------------------------------------------------
+  # POST_BUILD - Upload plan + log to S3, publish SNS result
+  # ---------------------------------------------------------------------------
+  post_build:
+    commands:
+      - |
+        cd "${CODEBUILD_SRC_DIR}/work/repo"
+        RESOLVED_COMMIT_ID=$(git rev-parse HEAD)
+        PLAN_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
+        LOG_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/logs/${CODEBUILD_BUILD_ID}"
+        aws s3 cp "${CODEBUILD_SRC_DIR}/work/tfplan.binary" "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}/tfplan.binary" --sse aws:kms --no-progress
+        aws s3 cp "${CODEBUILD_SRC_DIR}/work/plan.txt" "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}/plan.txt" --sse aws:kms --no-progress
+        if [ -f "${CODEBUILD_SRC_DIR}/work/apply.txt" ]; then
+          aws s3 cp "${CODEBUILD_SRC_DIR}/work/apply.txt" "s3://${ARTIFACT_BUCKET}/${LOG_KEY}/apply.txt" --sse aws:kms --no-progress
+        fi
+        if [ "${SNS_TOPIC_ARN}" != "DISABLED" ] && [ -n "${SNS_TOPIC_ARN}" ]; then
+          if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+            RESULT="SUCCESS"; SUBJECT="AUTO-APPLY SUCCESS: ${PROJECT_NAME} (${ENVIRONMENT})"
+          else
+            RESULT="FAILED"; SUBJECT="AUTO-APPLY FAILED: ${PROJECT_NAME} (${ENVIRONMENT})"
+          fi
+          aws sns publish \
+            --topic-arn "${SNS_TOPIC_ARN}" \
+            --subject "${SUBJECT}" \
+            --message "Terraform Auto-Apply ${RESULT}: repo=${REPOSITORY_NAME} branch=${BRANCH_NAME} commit=${RESOLVED_COMMIT_ID} plan=s3://${ARTIFACT_BUCKET}/${PLAN_KEY}/plan.txt log=s3://${ARTIFACT_BUCKET}/${LOG_KEY}/apply.txt"
+        fi
+
+# ---------------------------------------------------------------------------
+# CACHE - Speed up subsequent builds by caching Terraform providers
+# ---------------------------------------------------------------------------
+cache:
+  paths:
+    - ".terraform/providers/**/*"
+    - "/root/.terraform.d/plugin-cache/**/*"

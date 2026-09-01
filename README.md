@@ -1,63 +1,62 @@
 # Terraform Pipeline Framework
 
 Enterprise-grade, reusable CloudFormation framework for deploying standardized
-Terraform CI/CD pipelines across an AWS Organization via CloudFormation StackSets.
+Terraform CI/CD pipelines within a single AWS account.
 
-**Version 4.0.0**
+**Version 5.0.0**
 
 ---
 
 ## What This Is
 
-One CloudFormation template. One CLI script. Any number of Terraform repositories.
-Every project gets an isolated, fully configured pipeline by passing parameters —
-no copy-paste, no per-project template maintenance, no second template to deploy.
+One CloudFormation template. One shared S3 bucket. Any number of Terraform
+repositories. Every project gets an isolated, fully configured pipeline by
+passing parameters — no copy-paste, no per-project template maintenance.
 
-**One template. One CLI script. One pipeline per project.**
+The template creates its own IAM roles, CodeBuild projects, CodePipeline
+(approval mode) or a self-contained auto-apply CodeBuild project (non-approval
+mode), EventBridge triggers, SNS notifications, and CloudWatch logs.
 
-| Component | Type | Deployed To | Purpose |
-|---|---|---|---|
-| `templates/terraform-pipeline-framework.yaml` | CloudFormation Template | Pipeline Account | CodePipeline, CodeBuild, EventBridge Bus, SNS, CloudWatch |
-| `iam/setup-event-forwarder.sh` | CLI Script | Repository Account | Creates forwarder IAM role + EventBridge rule |
-| `iam/grant-artifact-access.sh` | CLI Script | Pipeline Account | Grants forwarder role S3 bucket access |
+**One template. One account. One pipeline per project.**
+
+| Component | Type | Purpose |
+|---|---|---|
+| `templates/terraform-pipeline-framework.yaml` | CloudFormation Template | Pipeline, CodeBuild, IAM roles, EventBridge, SNS, CloudWatch |
+| `buildspec/buildspec-plan.yml` | Buildspec | Approval mode plan stage |
+| `buildspec/buildspec-apply.yml` | Buildspec | Approval mode apply stage |
+| `buildspec/buildspec-auto.yml` | Buildspec | Non-approval mode clone + plan + guard + apply |
+| `iam/trust-execution-role.json` | Reference | Optional execution-role trust policy template |
 
 ---
 
 ## Repository Structure
 
 ```
-org-stackset-template/
+fluffy-cf-template-invention/
 ├── templates/
-│   └── terraform-pipeline-framework.yaml   # THE ONLY template — Pipeline Account
+│   └── terraform-pipeline-framework.yaml   # THE ONLY template — single account
 │
 ├── buildspec/
-│   ├── buildspec-plan.yml                  # terraform init + validate + plan
-│   └── buildspec-apply.yml                 # terraform apply (saved plan binary)
+│   ├── buildspec-plan.yml                  # Plan stage (approval mode)
+│   ├── buildspec-apply.yml                 # Apply stage (approval mode)
+│   └── buildspec-auto.yml                  # Auto mode (clone + guard + apply)
 │
 ├── iam/
-│   ├── setup-event-forwarder.sh            # Creates forwarder role + EventBridge rule
-│   ├── grant-artifact-access.sh            # Grants forwarder role S3 bucket access
-│   ├── create-iam-roles.sh                 # Creates pipeline + codebuild roles
-│   ├── trust-pipeline-role.json            # Trust policy for PipelineRole
-│   ├── trust-codebuild-role.json           # Trust policy for CodeBuildRole
-│   ├── trust-execution-role.json           # Trust policy template for ExecutionRole
-│   ├── permissions-pipeline-role.json      # Permissions for PipelineRole
-│   └── permissions-codebuild-role.json     # Permissions for CodeBuildRole
+│   └── trust-execution-role.json           # Optional execution-role trust template
 │
 ├── parameters/
-│   ├── pipeline-prod.json                  # Pipeline — prod with approval
-│   ├── pipeline-dev.json                   # Pipeline — dev, auto-merge
-│   ├── pipeline-test.json                  # Pipeline — test, auto-merge
-│   ├── stackset-overrides.json             # StackSet parameter overrides
-│   └── eventbridge-event.json              # Example raw CodeCommit event shape
+│   ├── pipeline-prod.json                  # prod with approval
+│   ├── pipeline-dev.json                   # dev with approval
+│   ├── pipeline-test.json                  # test — auto mode (no approval)
+│   └── stackset-overrides.json             # StackSet parameter overrides
 │
 ├── docs/
-│   ├── deployment-guide.md                 # Prerequisites, step-by-step deployment
-│   ├── architecture.md                     # Account topology, event flow, resources
-│   ├── parameter-reference.md              # All parameters, IAM roles, outputs
-│   └── security.md                         # Security controls and recommendations
+│   ├── architecture.md                     # Topology, event flow, resources
+│   ├── deployment-guide.md                 # Prerequisites, step-by-step deploy, ops, troubleshooting
+│   ├── parameter-reference.md              # Every parameter, conditions, outputs
+│   ├── security.md                         # Security controls and recommendations
+│   └── artifact-bucket-guide.md            # Shared bucket creation, retention, lifecycle
 │
-├── org-setup.txt                           # AWS Organizations setup notes
 └── README.md                               # This file
 ```
 
@@ -65,36 +64,35 @@ org-stackset-template/
 
 ## Pipeline Behavior
 
-One boolean controls everything. No mode selection required.
+One boolean controls the deployment mode.
 
 | EnableApproval | Pipeline Flow | Use For |
 |---|---|---|
-| `false` | Source → Plan → Apply (auto) | Dev / sandbox — fast automated deploys |
-| `true` | Source → Plan → Approve → Apply | Staging and production — gated deployments |
+| `true` | Source → Plan → Approve → Apply | Staging and production — gated, reviewed deployments |
+| `false` | single CodeBuild: clone → plan → guard → auto-apply | Dev / sandbox — fast automated deploys |
 
-In both modes, the Apply stage runs `terraform apply tfplan.binary`
-— the exact plan binary produced by the Plan stage. No re-plan occurs.
+In approval mode, the Apply stage downloads and applies the **exact plan binary**
+produced by the Plan stage (shared via S3, keyed by commit). No re-plan occurs.
+
+In auto mode, the build **blocks any plan that would destroy or replace
+resources** (`must be replaced` / `will be destroyed`), failing the build instead.
 
 ---
 
 ## Quick Start
 
-### 1. Create IAM Roles and S3 Buckets
+### 1. Create the shared artifact bucket (once per account)
 
-In both the Pipeline Account and Repository Account, create the required IAM roles
-and S3 buckets before deploying anything.
+Follow [docs/artifact-bucket-guide.md](docs/artifact-bucket-guide.md) to create a
+single versioned, SSE-KMS-encrypted bucket used by all projects (pass its name
+as `ArtifactBucket`).
 
-```bash
-cd iam/
-./create-iam-roles.sh --profile pipeline-account   # PipelineRole + CodeBuildRole
-./create-iam-roles.sh --profile repo-account       # ForwarderRole (created by setup-event-forwarder.sh)
-```
+### 2. (GitHub only) Create a CodeStar Connections connection
 
-Ensure you have:
-- S3 bucket for CodePipeline artifacts (Pipeline Account)
-- S3 bucket for Terraform state (your backend)
+If `RepositoryProvider=github`, create a CodeStar Connections (GitHub App)
+connection and pass its ARN as `CodeStarConnectionArn`.
 
-### 2. Deploy the Pipeline Stack — Pipeline Account
+### 3. Deploy the stack
 
 ```bash
 aws cloudformation deploy \
@@ -102,51 +100,23 @@ aws cloudformation deploy \
   --stack-name <project>-<env>-tf-pipeline \
   --parameter-overrides file://parameters/pipeline-prod.json \
   --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1 \
-  --profile pipeline-account
+  --region us-east-1
 ```
 
-### 3. Capture the Event Bus ARN
+Roles are created by the template (`CreateIamRoles=true`, `RolePath` controls the
+IAM path). For approval mode the manual approval happens in the CodePipeline
+console or via the SDK.
 
-```bash
-aws cloudformation describe-stacks \
-  --stack-name <project>-<env>-tf-pipeline \
-  --query "Stacks[0].Outputs[?OutputKey=='EventBusArn'].OutputValue" \
-  --output text --profile pipeline-account
-```
+### 4. Copy buildspecs to the repository
 
-### 4. Set Up the Event Forwarder — Repository Account
+| File | When Required | Purpose |
+|---|---|---|
+| `buildspec/buildspec-plan.yml` | approval mode | Plan stage — init, validate, plan, upload |
+| `buildspec/buildspec-apply.yml` | approval mode | Apply stage — download plan, apply, upload log |
+| `buildspec/buildspec-auto.yml` | auto mode | Auto build — clone, plan, guard, apply |
 
-Run the setup script in the Repository Account with the Event Bus ARN from step 3.
-This creates the forwarder IAM role and EventBridge rule that forwards CodeCommit
-push events to your pipeline's event bus.
-
-```bash
-./iam/setup-event-forwarder.sh \
-  --event-bus-arn <EventBusArn from step 3> \
-  --profile repo-account
-```
-
-### 5. Grant Artifact Access — Pipeline Account
-
-The forwarder role needs S3 access to push events to the pipeline's artifact bucket.
-Run this script to attach the bucket policy.
-
-```bash
-./iam/grant-artifact-access.sh \
-  --stack-name <project>-<env>-tf-pipeline \
-  --forwarder-role-arn <ForwarderRoleArn from step 4> \
-  --profile pipeline-account
-```
-
-### 6. Copy Buildspecs to the Target Repository
-
-| File | Purpose |
-|---|---|
-| `buildspec/buildspec-plan.yml` | Plan stage — runs init, validate, plan |
-| `buildspec/buildspec-apply.yml` | Apply stage — runs apply on saved plan binary |
-
-Commit both to the repository root and push. The pipeline triggers automatically.
+Commit the relevant buildspec(s) to the repository and push. EventBridge
+triggers the pipeline/build on the monitored branch.
 
 ---
 
@@ -154,23 +124,22 @@ Commit both to the repository root and push. The pipeline triggers automatically
 
 | Document | Contents |
 |---|---|
-| [docs/deployment-guide.md](docs/deployment-guide.md) | Prerequisites, IAM roles, step-by-step deployment, day-2 operations, troubleshooting |
-| [docs/architecture.md](docs/architecture.md) | Account topology, event flow diagram, resources created, conditions logic, artifact paths |
-| [docs/parameter-reference.md](docs/parameter-reference.md) | Every parameter, IAM role trust policies, stack outputs |
-| [docs/security.md](docs/security.md) | Least-privilege IAM, artifact security, secrets management, pipeline integrity |
+| [docs/deployment-guide.md](docs/deployment-guide.md) | Prerequisites, step-by-step deployment, day-2 operations, troubleshooting |
+| [docs/architecture.md](docs/architecture.md) | Single-account topology, event flow, resources, conditions, artifact paths |
+| [docs/parameter-reference.md](docs/parameter-reference.md) | Every parameter, conditions, stack outputs |
+| [docs/security.md](docs/security.md) | Least-privilege IAM, artifact security, pipeline integrity |
+| [docs/artifact-bucket-guide.md](docs/artifact-bucket-guide.md) | Shared bucket creation, versioning, encryption, retention, lifecycle |
 
 ---
 
 ## Key Design Principles
 
-- **Single template** — one CloudFormation template (`terraform-pipeline-framework.yaml`) deploys the entire pipeline. No per-project template maintenance.
-- **CLI-managed forwarder** — `setup-event-forwarder.sh` creates the forwarder role and EventBridge rule in repository accounts. No second template to deploy.
-- **Generic forwarder role** — one role per repository account, forwards to ALL pipeline event buses. Shared across every pipeline triggered from that account.
-- **Bucket policy via CLI** — `grant-artifact-access.sh` manages S3 bucket access for the forwarder role. No IAM roles created by the template.
-- **No IAM roles created by the template** — all role ARNs are passed as parameters. Roles are managed separately per organizational standard.
-- **No hardcoded values** — every project-specific value is a parameter.
-- **Isolated per project** — each stack creates its own Event Bus, pipeline, SNS topic, and log groups. Zero shared state.
-- **Plan binary integrity** — Apply consumes the exact plan binary from the Plan stage. No re-plan between plan and apply.
-- **Event-driven only** — `PollForSourceChanges: false`. Every execution is tied to a specific commit ID passed through EventBridge.
-- **Least privilege forwarding** — the forwarder role grants only `events:PutEvents` on `arn:aws:events:*:<pipeline-account>:event-bus/*`. Nothing else.
-- **Simple approval control** — one boolean (`EnableApproval`) determines whether a manual approval gate is inserted between Plan and Apply.
+- **Single template** — one CloudFormation template deploys the entire pipeline. No per-project template maintenance.
+- **Single account** — repo and pipeline live in the same account. No cross-account roles, forwarders, or custom event buses.
+- **Template-created roles** — `CreateIamRoles` + `RolePath` let the template mint IAM roles in a team's allowed path. No separate role scripts.
+- **Clone-capable CodeBuild role** — the CodeBuild role can clone CodeCommit (GitPull) or use a CodeStar connection for GitHub, so the auto mode needs no Source stage.
+- **One shared artifact bucket** — plan binaries, logs, build cache, and CodePipeline artifacts all share one governed, versioned, encrypted bucket.
+- **Plan binary integrity** — Apply downloads the exact S3 plan binary produced by Plan, keyed by commit. No re-plan between plan and apply.
+- **Block destructive auto-apply** — auto mode fails the build if the plan contains destroy/replace actions.
+- **Event-driven only** — `PollForSourceChanges: false`. Every execution is tied to a specific commit passed through EventBridge on the default bus.
+- **Simple mode control** — one boolean (`EnableApproval`) selects approval vs. auto mode.

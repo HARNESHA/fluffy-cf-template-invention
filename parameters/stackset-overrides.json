@@ -8,12 +8,12 @@
     "ParameterValue": "prod"
   },
   {
-    "ParameterKey": "RepositoryName",
-    "ParameterValue": "shared-services"
+    "ParameterKey": "RepositoryProvider",
+    "ParameterValue": "codecommit"
   },
   {
-    "ParameterKey": "RepositoryAccountId",
-    "ParameterValue": "111122223333"
+    "ParameterKey": "RepositoryName",
+    "ParameterValue": "shared-services"
   },
   {
     "ParameterKey": "RepositoryRegion",
@@ -22,6 +22,10 @@
   {
     "ParameterKey": "BranchName",
     "ParameterValue": "main"
+  },
+  {
+    "ParameterKey": "CodeStarConnectionArn",
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "TerraformDirectory",
@@ -48,12 +52,20 @@
     "ParameterValue": "true"
   },
   {
+    "ParameterKey": "CreateIamRoles",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "RolePath",
+    "ParameterValue": "/"
+  },
+  {
     "ParameterKey": "PipelineRoleArn",
-    "ParameterValue": "arn:aws:iam::444455556666:role/TerraformPipelineServiceRole"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "CodeBuildRoleArn",
-    "ParameterValue": "arn:aws:iam::444455556666:role/TerraformCodeBuildRole"
+    "ParameterValue": ""
   },
   {
     "ParameterKey": "ExecutionRoleArn",
@@ -61,7 +73,11 @@
   },
   {
     "ParameterKey": "ArtifactBucket",
-    "ParameterValue": "my-org-codepipeline-artifacts-444455556666"
+    "ParameterValue": "tf-artifacts-444455556666"
+  },
+  {
+    "ParameterKey": "ArtifactPrefix",
+    "ParameterValue": "terraform-artifacts"
   },
   {
     "ParameterKey": "BuildImage",

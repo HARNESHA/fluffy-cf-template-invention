@@ -2,273 +2,176 @@
 
 ## Overview
 
-The framework consists of a single CloudFormation template (`terraform-pipeline-framework.yaml`) deployed to a central **Pipeline Account**. Cross-account event forwarding is handled by a CLI-created IAM Role and EventBridge Rule in each repository account. Together they form an event-driven, cross-account Terraform CI/CD pipeline where repositories and the pipeline infrastructure live in separate AWS accounts.
+The framework is a single CloudFormation template
+(`templates/terraform-pipeline-framework.yaml`) deployed once per
+project/environment within **one AWS account**. Repositories, pipeline
+infrastructure, IAM roles, and the shared S3 artifact bucket all live in the
+same account. There is **no cross-account** event forwarding, no forwarder
+roles, and no custom EventBridge bus — the template triggers on CodeCommit
+push events on the account's **default** EventBridge bus.
 
 ---
 
 ## Account Topology
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                          AWS ORGANIZATIONS                                │
-│                        Management Account                                 │
-│                        (000000000000)                                     │
-│                                                                           │
-│   StackSet deploys 1 template to Pipeline Account                         │
-└────────────────────────────┬─────────────────────────────────────────────┘
-                             │
-           ┌─────────────────┴──────────────────┐
-           │                                    │
-           ▼                                    ▼
-┌──────────────────────┐           ┌────────────────────────────────────┐
-│  REPOSITORY ACCOUNT  │           │         PIPELINE ACCOUNT           │
-│  (111122223333)      │           │         (444455556666)              │
-│                      │           │                                    │
-│  No CloudFormation   │           │  terraform-pipeline-framework      │
-│                      │           │  (1 template, 12+ resources)       │
-│  CLI-Created:        │           │                                    │
-│  ┌────────────────┐  │           │  ┌──────────────────────────────┐  │
-│  │  IAM Role      │  │           │  │  Custom EventBridge Bus      │  │
-│  │  (forwarder)   │  │           │  │  EventBridge Trigger Rule    │  │
-│  ├────────────────┤  │           │  │  CodePipeline                │  │
-│  │  EventBridge   │  │ events    │  │  CodeBuild (Plan)            │  │
-│  │  Rule          ├──┼──────────►│  │  CodeBuild (Apply)           │  │
-│  │  (default bus) │  │ PutEvents │  │  SNS Topic + Subscription    │  │
-│  ├────────────────┤  │           │  │  CloudWatch Log Groups       │  │
-│  │  CodeCommit    │  │           │  │  EventBridge Failure Rule    │  │
-│  │  Repository    │  │           │  └──────────────────────────────┘  │
-│  └────────────────┘  │           │                                    │
-└──────────────────────┘           └────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                    SINGLE AWS ACCOUNT                        │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │              terraform-pipeline-framework.yaml          │ │
+│  │              (deployed per project/environment)         │ │
+│  │                                                          │ │
+│  │  ┌─────────────┐   ┌───────────────────────────────┐   │ │
+│  │  │ CodeCommit  │   │ Approval mode:                 │   │ │
+│  │  │ (or GitHub  │   │  CodePipeline                 │   │ │
+│  │  │ via CodeStar│   │  Plan → Approve → Apply       │   │ │
+│  │  │ connection) │   │                               │   │ │
+│  │  └──────┬──────┘   │ Auto mode:                    │   │ │
+│  │         │          │  CodeBuild clone+plan+apply   │   │ │
+│  │         │ default  └───────────────────────────────┘   │ │
+│  │         │ bus       │                                  │ │
+│  │  ┌──────▼──────┐    │  EventBridge trigger rule       │ │
+│  │  │ EventBridge │    │  IAM roles (CreateIamRoles)     │ │
+│  │  │ (default)   │    │  SNS topic + subscription       │ │
+│  │  └─────────────┘    │  CloudWatch log groups          │ │
+│  │                      └────────────────────────────────┘ │
+│  │                                                          │
+│  │  Shared S3 artifact bucket (tf-artifacts-<acct>)         │
+│  └────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Event Flow
 
-Every pipeline execution follows this exact sequence:
-
 ```
 1. Developer pushes a commit to the monitored branch
            │
            ▼
 2. CodeCommit emits a "Repository State Change" event
-   to the DEFAULT EventBridge bus in the repository account
+   to the DEFAULT EventBridge bus (same account)
            │
            ▼
-3. EventBridge Rule (CLI-created by setup-event-forwarder.sh)
-   on the default bus matches the event:
-     source          = aws.codecommit
-     referenceType   = branch   ← explicitly excludes tags
-     event           = referenceCreated | referenceUpdated
-           │
-           │  cross-account PutEvents via generic IAM Role
-           │  (events:PutEvents on arn:aws:events:*:<pipeline-acct>:event-bus/*)
-           ▼
-4. Custom Event Bus in Pipeline Account receives the event
-   (TerraformPipelineEventBus)
+3. EventBridge Rule (template-created, PipelineTriggerRule or
+   AutoBuildTriggerRule) matches:
+     source         = aws.codecommit
+     referenceType  = branch      ← excludes tags
+     event          = referenceCreated | referenceUpdated
            │
            ▼
-5. EventBridge Rule on the custom bus triggers CodePipeline
-   (PipelineTriggerRule)
-   Passes commitId as a source revision override
+4a. Approval mode:  rule starts CodePipeline (passing commitId as
+     source revision) → Source → Plan → Approve → Apply
+4b. Auto mode:      rule starts the CodeBuild auto project (clone +
+     plan + guard + apply)
            │
            ▼
-6. CodePipeline executes stages:
-
-   EnableApproval=false         EnableApproval=true
-   ─────────────────────        ────────────────────
-   Source                       Source
-     │                            │
-   Plan                         Plan
-     │                            │
-   Apply                        [SNS email]
-     │                            │
-   [SNS result]                 Approve
-     │                            │
-   END                          Apply
-                                  │
-                                [SNS result]
-                                  │
-                                 END
-           │
-           ▼
-7. SNS notification delivered to subscribed email address
+5. SNS notification delivered to subscribed email address
 ```
 
 ---
 
 ## Resource Breakdown
 
-### Template 1 — terraform-pipeline-framework.yaml
+### terraform-pipeline-framework.yaml
 
-**Deployed to: Pipeline Account**
-**Resources per stack: 12 (always) + 2 (conditional) = 14 total**
+**Deployed to:** single account (per project/environment)
 
-#### Always Created (12 resources)
+#### IAM Roles (created only when `CreateIamRoles=true`)
 
-| # | Resource Logical ID | AWS Type | Purpose |
+| Logical ID | AWS Type | Trust | Purpose |
 |---|---|---|---|
-| 1 | `PlanBuildLogGroup` | `AWS::Logs::LogGroup` | CloudWatch logs for Plan CodeBuild |
-| 2 | `ApplyBuildLogGroup` | `AWS::Logs::LogGroup` | CloudWatch logs for Apply CodeBuild |
-| 3 | `PipelineEventLogGroup` | `AWS::Logs::LogGroup` | CloudWatch logs for pipeline events |
-| 4 | `TerraformPipelineEventBus` | `AWS::Events::EventBus` | Custom bus — receives cross-account CodeCommit events |
-| 5 | `TerraformPipelineEventBusPolicy` | `AWS::Events::EventBusPolicy` | Grants repository account `events:PutEvents` on the bus |
-| 6 | `PipelineTriggerRule` | `AWS::Events::Rule` | Filters events on the custom bus and starts CodePipeline |
-| 7 | `TerraformPlanProject` | `AWS::CodeBuild::Project` | Runs `init`, `validate`, `plan` |
-| 8 | `TerraformApplyProject` | `AWS::CodeBuild::Project` | Runs `apply` on saved plan binary |
-| 9 | `TerraformPipeline` | `AWS::CodePipeline::Pipeline` | Orchestrates Source → Plan → [Approve] → Apply |
-| 10 | `PipelineNotificationTopic` | `AWS::SNS::Topic` | Sends plan summaries, approvals, and failure alerts |
-| 11 | `PipelineNotificationSubscription` | `AWS::SNS::Subscription` | Email subscription to the SNS topic |
-| 12 | `PipelineNotificationTopicPolicy` | `AWS::SNS::TopicPolicy` | Allows CodeBuild and EventBridge to publish |
+| `PipelineRole` | `AWS::IAM::Role` | `codepipeline.amazonaws.com` | CodePipeline service role |
+| `PipelineRolePolicy` | `AWS::IAM::Policy` | — | S3, CodeCommit/CodeStar, CodePipeline, CodeBuild, SNS, Logs |
+| `CodeBuildRole` | `AWS::IAM::Role` | `codebuild.amazonaws.com` | Clone-capable CodeBuild role |
+| `CodeBuildRolePolicy` | `AWS::IAM::Policy` | — | S3 (artifact+state), CodeCommit GitPull/CodeStar, Logs, STS execution role, SNS, SSM |
 
-#### Conditionally Created (2 resources)
+`RolePath` places roles under a team/org IAM path. When `CreateIamRoles=false`,
+the template uses the pre-existing `PipelineRoleArn` / `CodeBuildRoleArn`.
 
-| # | Resource Logical ID | AWS Type | Condition | When Created |
-|---|---|---|---|---|
-| 13 | `PipelineFailureNotificationRule` | `AWS::Events::Rule` | `EnableEmailNotifications=true` | Always when notifications enabled |
-| 14 | `PipelineNotificationSubscription` | `AWS::SNS::Subscription` | `EnableEmailNotifications=true` | Always when notifications enabled |
+#### Base resources
 
-**Note:** CloudWatch Log Groups have no `DeletionPolicy`. They are destroyed when the stack is deleted.
+| Logical ID | AWS Type | Condition | Purpose |
+|---|---|---|---|
+| `PlanBuildLogGroup` | `AWS::Logs::LogGroup` | `CreateCloudWatchLogs` | Logs for Plan/auto CodeBuild |
+| `ApplyBuildLogGroup` | `AWS::Logs::LogGroup` | `CreateCloudWatchLogs` | Logs for Apply CodeBuild |
+| `AutoBuildLogGroup` | `AWS::Logs::LogGroup` | `CreateCloudWatchLogs` | Logs for auto CodeBuild |
+| `PipelineNotificationTopic` | `AWS::SNS::Topic` | `EnableEmailNotifications` | Notifications |
+| `PipelineNotificationSubscription` | `AWS::SNS::Subscription` | `EnableEmailNotifications` | Email subscription |
+| `PipelineNotificationTopicPolicy` | `AWS::SNS::TopicPolicy` | `EnableEmailNotifications` | Allows publish from CodeBuild/EventBridge |
 
-### Template 1 — Conditions Reference
+#### Approval-mode resources (`EnableApproval=true`)
+
+| Logical ID | AWS Type | Purpose |
+|---|---|---|
+| `TerraformPlanProject` | `AWS::CodeBuild::Project` | Plan stage (CODEPIPELINE source, `buildspec-plan.yml`) |
+| `TerraformApplyProject` | `AWS::CodeBuild::Project` | Apply stage (CODEPIPELINE source, `buildspec-apply.yml`) |
+| `TerraformPipeline` | `AWS::CodePipeline::Pipeline` | Source → Plan → Approve → Apply |
+| `PipelineTriggerRule` | `AWS::Events::Rule` | Default bus → starts pipeline on push |
+| `PipelineFailureNotificationRule` | `AWS::Events::Rule` | Failure alerts |
+
+#### Auto-mode resources (`EnableApproval=false`)
+
+| Logical ID | AWS Type | Purpose |
+|---|---|---|
+| `TerraformAutoProject` | `AWS::CodeBuild::Project` | NO_SOURCE, inline buildspec = `buildspec-auto.yml` |
+| `AutoBuildTriggerRule` | `AWS::Events::Rule` | Default bus → starts the auto build on push |
+
+---
+
+## Conditions Reference
 
 | Condition | Expression | Controls |
 |---|---|---|
-| `CreateApprovalStage` | `EnableApproval == "true"` | Manual Approval stage in pipeline |
+| `CreateApprovalStage` | `EnableApproval == "true"` | Pipeline, Plan/Apply projects, PipelineTriggerRule |
+| `AutoDeployMode` | `EnableApproval == "false"` | Auto CodeBuild + AutoBuildTriggerRule |
+| `CreateIamRoles` | `CreateIamRoles == "true"` | Role creation |
 | `EnableEmailNotifications` | `EnableEmailNotifications == "true"` | SNS topic, subscription, failure alerts |
-| `EnableCloudWatch` | `CreateCloudWatchLogs == "true"` | CloudWatch Log Groups |
-| `UseCustomPipelineName` | `PipelineName != ""` | Pipeline naming (auto vs explicit) |
-| `HasExecutionRole` | `ExecutionRoleArn != ""` | STS AssumeRole in buildspecs |
-| `IsCrossAccountRepo` | `RepositoryAccountId != AWS::AccountId` | Cross-account source role |
-
-### Template 1 — IAM Roles Required
-
-| Role | Used By | Trust | Minimum Permissions |
-|---|---|---|---|
-| `PipelineRoleArn` | CodePipeline + EventBridge trigger | `codepipeline.amazonaws.com`, `events.amazonaws.com` | S3, CodeCommit, CodePipeline, CodeBuild, EventBridge, SNS |
-| `CodeBuildRoleArn` | Plan + Apply CodeBuild | `codebuild.amazonaws.com` | S3, Logs, STS, SNS, SSM |
-| `ExecutionRoleArn` (optional) | Runtime via STS AssumeRole | CodeBuild roles | Infrastructure permissions for Terraform |
+| `EnableCloudWatch` | `CreateCloudWatchLogs == "true"` | CloudWatch log groups |
+| `HasExecutionRole` | `ExecutionRoleArn != ""` | STS AssumeRole in buildspec + role policy |
+| `IsGithub` | `RepositoryProvider == "github"` | CodeStar connection usage |
+| `IsCodeCommit` | `RepositoryProvider == "codecommit"` | CodeCommit source/clone |
 
 ---
 
-### CLI-Created Resources — Repository Account
-
-Created by `iam/setup-event-forwarder.sh` in each repository account.
-
-| # | Resource | AWS Type | Purpose |
-|---|---|---|---|
-| 1 | Event Forwarder IAM Role | `aws iam create-role` | Generic role for EventBridge to `PutEvents` to any pipeline bus |
-| 2 | EventBridge Forwarder Rule | `aws events put-rule` | Captures CodeCommit pushes on the default bus and forwards them |
-
-#### IAM Role Details
-
-| Property | Value |
-|---|---|
-| Trust Principal | `events.amazonaws.com` |
-| Trust Condition | `aws:SourceAccount` = repo account ID |
-| Policy Statement | `events:PutEvents` on `arn:aws:events:*:<pipeline-account-id>:event-bus/*` |
-| Created by | `iam/setup-event-forwarder.sh` |
-
-The role is **generic** — it allows putting events to any event bus in the pipeline account. This means a single role can target multiple pipeline stacks.
-
-#### EventBridge Rule Details
-
-| Property | Value |
-|---|---|
-| Bus | Default bus in the repo account |
-| Event Source | `aws.codecommit` |
-| Event Pattern | `referenceType = branch`, events = `referenceCreated`, `referenceUpdated` |
-| Target | Custom event bus ARN passed via `--event-bus-arn` |
-| Created by | `iam/setup-event-forwarder.sh` |
-
-#### Bucket Policy
-
-Created by `iam/grant-artifact-access.sh` in the **Pipeline Account**.
-Grants the CodeBuild roles in the pipeline account access to the artifact S3 bucket.
-
----
-
-## Account Topology Summary
-
-| Account | Resources | Provisioned By |
-|---|---|---|
-| **Pipeline Account** | 1 CloudFormation template (14 resources): EventBus, TriggerRule, Pipeline, CodeBuild, SNS, Logs | `terraform-pipeline-framework.yaml` via StackSets |
-| **Repository Account** | 2 CLI-created resources: Forwarder IAM Role + EventBridge Rule | `iam/setup-event-forwarder.sh` |
-
----
-
-## Deployment Flow
+## Artifact Flow (shared bucket)
 
 ```
-Step 1: Create IAM roles + S3 buckets
-         (per-account, manual or separate automation)
-              │
-              ▼
-Step 2: Deploy terraform-pipeline-framework.yaml to Pipeline Account
-         via StackSet → outputs EventBusArn
-              │
-              ▼
-Step 3: Run iam/setup-event-forwarder.sh in Repository Account
-         --event-bus-arn <EventBusArn from Step 2>
-         (creates IAM Role + EventBridge Rule on default bus)
-              │
-              ▼
-Step 4: Run iam/grant-artifact-access.sh in Pipeline Account
-         (grants CodeBuild access to artifact S3 bucket)
-              │
-              ▼
-Step 5: Copy buildspec files to artifact bucket
-         Push commit → CodeCommit event → forwarder → pipeline triggers
-```
-
----
-
-## Artifact Flow
-
-```
-S3 Artifact Bucket (ArtifactBucket parameter)
+Shared S3 bucket (ArtifactBucket, e.g. tf-artifacts-<acct>)
 │
-├── [CodePipeline managed]
-│   └── <pipeline-name>/<execution-id>/
-│       ├── SourceOutput.zip        ← repository source code
-│       └── PlanOutput.zip          ← contains tfplan.binary + plan.txt
-│
-└── [buildspec managed — uploaded by scripts]
-    └── <project>/<environment>/<commit-id>/
-        ├── tfplan.binary            ← binary plan (passed to Apply stage)
-        ├── plan.txt                 ← human-readable plan output
-        └── apply.txt                ← apply execution log
+├── terraform-artifacts/                     ← ArtifactPrefix
+│   └── <repository>/<environment>/<branch>/
+│       ├── plans/<commit-id>/
+│       │   ├── tfplan.binary               ← plan binary (Plan uploads, Apply downloads)
+│       │   └── plan.txt                    ← human-readable plan
+│       └── logs/<codebuild-build-id>/
+│           └── apply.txt                   ← apply log
+├── build-cache/<project>-<env>-<plan|apply|auto>/   ← CodeBuild provider cache
+└── <pipeline-name>/                        ← CodePipeline managed artifact store
 ```
 
-The plan binary lives in two places deliberately:
-- Inside `PlanOutput.zip` for CodePipeline artifact chaining (Apply stage input)
-- Uploaded directly to S3 by path for permanent audit trail keyed by commit SHA
+The plan binary is shared between Plan and Apply via the deterministic S3 key
+`{ArtifactPrefix}/{RepositoryName}/{Environment}/{BranchName}/plans/{CommitId}/tfplan.binary`,
+guaranteeing Apply uses the exact reviewed binary. See
+[artifact-bucket-guide.md](artifact-bucket-guide.md) for bucket setup and
+retention.
 
 ---
 
 ## Scalability Model
 
-This framework is designed to scale across hundreds of repositories:
+Each Terraform repo/environment gets its own isolated stack inside the same
+account:
 
 ```
-Each Terraform repo gets its own isolated stack:
-
   payments-infra-prod-tf-pipeline
-    ├── EventBus:  payments-infra-prod-terraform-pipeline-bus
-    ├── Pipeline:  payments-infra-prod-main-tf-pipeline
-    ├── SNS:       payments-infra-prod-tf-pipeline-notifications
-    └── Logs:      /codebuild/payments-infra-prod-tf-plan
-
-  network-core-prod-tf-pipeline
-    ├── EventBus:  network-core-prod-terraform-pipeline-bus
-    ├── Pipeline:  network-core-prod-main-tf-pipeline
-    ├── SNS:       network-core-prod-tf-pipeline-notifications
-    └── Logs:      /codebuild/network-core-prod-tf-plan
-
-  shared-services-prod-tf-pipeline
-    ...
+    ├── Pipeline/CB: payments-infra-prod...
+    ├── IAM roles:   /payments-infra-prod-pipeline-role, -codebuild-role
+    ├── SNS:         payments-infra-prod-tf-notification
+    └── Logs:        /codebuild/payments-infra-prod-tf-plan
 ```
 
-No shared state, no cross-pipeline interference, full isolation per project.
-
-Each repository account needs only two CLI-created resources (IAM Role + EventBridge Rule), making it trivial to add new repos.
+All stacks share one governed artifact bucket (`tf-artifacts-<acct>`), with
+key prefixes (`<repo>/<env>/<branch>/`) isolating each pipeline's artifacts.
+No cross-project interference.

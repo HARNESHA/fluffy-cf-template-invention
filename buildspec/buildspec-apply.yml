@@ -1,19 +1,30 @@
 # =============================================================================
 # buildspec-apply.yml
-# Terraform Apply Buildspec
-# Used by: TerraformApplyProject (SEPARATE_PLAN_APPLY mode only)
+# Terraform Apply Buildspec (approval/pipeline path)
+# Used by: TerraformApplyProject (CODEPIPELINE source)
 #
-# IMPORTANT: This buildspec consumes the saved plan binary produced by the
-# Plan stage. It does NOT re-plan. This guarantees that exactly what was
-# reviewed and approved is what gets applied.
+# IMPORTANT: This buildspec downloads the EXACT plan binary that the Plan
+# stage uploaded to S3 (keyed by commit) and applies it. It does NOT re-plan.
+# This guarantees that exactly what was reviewed and approved is what gets
+# applied.
 #
 # Stages:
 #   install   - Install Terraform at pinned version
-#   pre_build - Assume execution role (if configured), retrieve plan binary
+#   pre_build - Assume execution role (if configured), download plan binary
 #   build     - terraform init → apply (saved plan)
-#   post_build - Publish SNS result notification
+#   post_build - Upload apply log to S3, publish SNS result notification
 #
-# Input Artifact: PlanOutput (from Plan stage - contains tfplan.binary)
+# S3 key scheme (must match the Plan buildspec):
+#   {ARTIFACT_PREFIX}/{REPOSITORY_NAME}/{ENVIRONMENT}/{BRANCH_NAME}/plans/{COMMIT_ID}/
+#     tfplan.binary
+#     plan.txt
+#   {ARTIFACT_PREFIX}/{REPOSITORY_NAME}/{ENVIRONMENT}/{BRANCH_NAME}/logs/{CODEBUILD_BUILD_ID}/
+#     apply.txt
+#
+# Environment Variables (injected by the CodeBuild project):
+#   TF_VERSION, TF_DIR, TF_BACKEND_BUCKET, TF_BACKEND_KEY, TF_BACKEND_REGION,
+#   PROJECT_NAME, ENVIRONMENT, REPOSITORY_NAME, BRANCH_NAME, COMMIT_ID,
+#   ARTIFACT_BUCKET, ARTIFACT_PREFIX, SNS_TOPIC_ARN, TF_EXECUTION_ROLE_ARN
 # =============================================================================
 
 version: 0.2
@@ -48,12 +59,20 @@ phases:
       - echo "=== [INSTALL] Terraform installation complete ==="
 
   # ---------------------------------------------------------------------------
-  # PRE_BUILD - Assume execution role, verify plan binary exists
+  # PRE_BUILD - Resolve commit, assume execution role, download plan binary
   # ---------------------------------------------------------------------------
   pre_build:
     commands:
       - echo "=== [PRE_BUILD] Configuring apply environment ==="
-      - export RESOLVED_COMMIT_ID="${COMMIT_ID:-$(git rev-parse HEAD 2>/dev/null || echo 'unknown')}"
+      - mkdir -p "${CODEBUILD_SRC_DIR}/work"
+      - export RESOLVED_COMMIT_ID="${COMMIT_ID}"
+      - |
+        if [ -z "${RESOLVED_COMMIT_ID}" ] || [ "${RESOLVED_COMMIT_ID}" = "undefined" ]; then
+          echo "COMMIT_ID not injected by pipeline - falling back to repo HEAD"
+          RESOLVED_COMMIT_ID=$(git -C "${CODEBUILD_SRC_DIR}/SourceOutput" rev-parse HEAD)
+          export RESOLVED_COMMIT_ID
+        fi
+      - export PLAN_ARTIFACT_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
       - export APPLY_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       - export AWS_REGION="${AWS_DEFAULT_REGION}"
       - echo "Project      : ${PROJECT_NAME}"
@@ -63,15 +82,17 @@ phases:
       - echo "Pipeline     : ${PIPELINE_NAME}"
       - echo "Execution ID : ${PIPELINE_EXECUTION_ID}"
 
-      # Verify the plan binary artifact was passed from the Plan stage
+      # Download the EXACT plan binary from S3 (keyed by commit)
       - |
-        if [ ! -f "${CODEBUILD_SRC_DIR}/tfplan.binary" ]; then
-          echo "ERROR: tfplan.binary not found in input artifact."
-          echo "Ensure the Apply stage has PlanOutput as its input artifact."
+        echo "Downloading plan: s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/tfplan.binary"
+        if ! aws s3 cp "s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/tfplan.binary" \
+            "${CODEBUILD_SRC_DIR}/work/tfplan.binary" --no-progress; then
+          echo "ERROR: Plan binary not found at ${PLAN_ARTIFACT_KEY}/tfplan.binary"
+          echo "Ensure the Plan stage ran successfully for commit ${RESOLVED_COMMIT_ID}."
           exit 1
         fi
-        echo "Plan binary verified: ${CODEBUILD_SRC_DIR}/tfplan.binary"
-        ls -lh "${CODEBUILD_SRC_DIR}/tfplan.binary"
+        echo "Plan binary downloaded: ${CODEBUILD_SRC_DIR}/work/tfplan.binary"
+        ls -lh "${CODEBUILD_SRC_DIR}/work/tfplan.binary"
 
       # Assume Terraform execution role if configured
       - |
@@ -94,12 +115,12 @@ phases:
       - echo "=== [PRE_BUILD] Apply environment ready ==="
 
   # ---------------------------------------------------------------------------
-  # BUILD - Terraform init (providers only) → apply saved plan
+  # BUILD - Terraform init (providers only) → apply saved plan binary
   # ---------------------------------------------------------------------------
   build:
     commands:
       - echo "=== [BUILD] Starting Terraform apply ==="
-      - cd "${CODEBUILD_SRC_DIR}/${TF_DIR}"
+      - cd "${CODEBUILD_SRC_DIR}/SourceOutput/${TF_DIR}"
 
       # Re-run init to restore providers (no re-plan, no backend changes)
       - echo "--- terraform init (provider restore) ---"
@@ -119,8 +140,8 @@ phases:
         terraform apply \
           -input=false \
           -no-color \
-          "${CODEBUILD_SRC_DIR}/tfplan.binary" \
-          2>&1 | tee "${CODEBUILD_SRC_DIR}/apply.txt"
+          "${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
+          2>&1 | tee "${CODEBUILD_SRC_DIR}/work/apply.txt"
       - echo "apply complete"
 
       # Capture apply status
@@ -128,7 +149,7 @@ phases:
       - echo "=== [BUILD] Terraform apply complete ==="
 
   # ---------------------------------------------------------------------------
-  # POST_BUILD - Publish SNS result notification
+  # POST_BUILD - Upload apply log to S3, publish SNS result notification
   # ---------------------------------------------------------------------------
   post_build:
     commands:
@@ -137,13 +158,13 @@ phases:
 
       # Upload apply output log
       - |
-        if [ -f "${CODEBUILD_SRC_DIR}/apply.txt" ]; then
-          APPLY_LOG_KEY="${PROJECT_NAME}/${ENVIRONMENT}/${RESOLVED_COMMIT_ID}/apply.txt"
-          aws s3 cp "${CODEBUILD_SRC_DIR}/apply.txt" \
-            "s3://${ARTIFACT_BUCKET}/${APPLY_LOG_KEY}" \
+        if [ -f "${CODEBUILD_SRC_DIR}/work/apply.txt" ]; then
+          LOG_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/logs/${CODEBUILD_BUILD_ID}"
+          aws s3 cp "${CODEBUILD_SRC_DIR}/work/apply.txt" \
+            "s3://${ARTIFACT_BUCKET}/${LOG_KEY}/apply.txt" \
             --sse aws:kms \
             --no-progress
-          echo "Apply log uploaded: s3://${ARTIFACT_BUCKET}/${APPLY_LOG_KEY}"
+          echo "Apply log uploaded: s3://${ARTIFACT_BUCKET}/${LOG_KEY}/apply.txt"
         fi
 
       # Notify success or failure via SNS
@@ -160,20 +181,21 @@ phases:
             SUBJECT="FAILED: Terraform Apply - ${PROJECT_NAME} (${ENVIRONMENT})"
             RESULT_NOTE="Apply failed. Review the CodeBuild logs for details."
           fi
-          MESSAGE="TERRAFORM APPLY ${RESULT_STATUS}
-=========================================
-Project       : ${PROJECT_NAME}
-Environment   : ${ENVIRONMENT}
-Repository    : ${REPOSITORY_NAME}
-Branch        : ${BRANCH_NAME}
-Commit        : ${RESOLVED_COMMIT_ID}
------------------------------------------
-Result        : ${RESULT_STATUS}
-Note          : ${RESULT_NOTE}
------------------------------------------
-Pipeline      : ${PIPELINE_URL}
-=========================================
-Executed at   : $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          MESSAGE=$(printf '%s\n' \
+            "TERRAFORM APPLY ${RESULT_STATUS}" \
+            "=========================================" \
+            "Project       : ${PROJECT_NAME}" \
+            "Environment   : ${ENVIRONMENT}" \
+            "Repository    : ${REPOSITORY_NAME}" \
+            "Branch        : ${BRANCH_NAME}" \
+            "Commit        : ${RESOLVED_COMMIT_ID}" \
+            "-----------------------------------------" \
+            "Result        : ${RESULT_STATUS}" \
+            "Note          : ${RESULT_NOTE}" \
+            "-----------------------------------------" \
+            "Pipeline      : ${PIPELINE_URL}" \
+            "=========================================" \
+            "Executed at   : $(date -u +"%Y-%m-%dT%H:%M:%SZ")")
           aws sns publish \
             --topic-arn "${SNS_TOPIC_ARN}" \
             --subject "${SUBJECT}" \
@@ -184,15 +206,6 @@ Executed at   : $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
         fi
 
       - echo "=== [POST_BUILD] Complete ==="
-
-# ---------------------------------------------------------------------------
-# ARTIFACTS - Preserve apply output log
-# ---------------------------------------------------------------------------
-artifacts:
-  files:
-    - apply.txt
-  name: TerraformApplyArtifact
-  discard-paths: "no"
 
 # ---------------------------------------------------------------------------
 # CACHE - Reuse providers from plan stage cache
