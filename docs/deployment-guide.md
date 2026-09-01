@@ -67,6 +67,7 @@ Key values you must set:
   {"ParameterKey": "BranchName",         "ParameterValue": "main"},
   {"ParameterKey": "CodeStarConnectionArn", "ParameterValue": ""},
   {"ParameterKey": "TerraformDirectory", "ParameterValue": "."},
+  {"ParameterKey": "TfVarsFile",       "ParameterValue": "envs/prod.tfvars"},
   {"ParameterKey": "BackendBucket",      "ParameterValue": "my-org-terraform-state-prod"},
   {"ParameterKey": "BackendKey",         "ParameterValue": "envs/prod/my-project/terraform.tfstate"},
   {"ParameterKey": "EnableApproval",     "ParameterValue": "true"},

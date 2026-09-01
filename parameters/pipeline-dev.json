@@ -36,6 +36,10 @@
     "ParameterValue": "1.10.5"
   },
   {
+    "ParameterKey": "TfVarsFile",
+    "ParameterValue": "envs/dev.tfvars"
+  },
+  {
     "ParameterKey": "BackendBucket",
     "ParameterValue": "826136930409-terraform-state-prod-1788254151"
   },

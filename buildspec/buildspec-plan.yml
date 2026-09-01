@@ -115,6 +115,7 @@ phases:
       - echo "--- terraform init ---"
       - |
         terraform init \
+          -backend-config="envs/${ENVIRONMENT}.tfbackend" \
           -backend-config="bucket=${TF_BACKEND_BUCKET}" \
           -backend-config="key=${TF_BACKEND_KEY}" \
           -backend-config="region=${TF_BACKEND_REGION}" \
@@ -130,12 +131,18 @@ phases:
 
       # terraform plan - save binary plan and human-readable output
       - echo "--- terraform plan ---"
+      - mkdir -p "${CODEBUILD_SRC_DIR}/work"
       - |
+        TF_ARGS=()
+        if [ -n "${TF_VARS_FILE}" ] && [ "${TF_VARS_FILE}" != "undefined" ]; then
+          TF_ARGS+=( -var-file="${TF_VARS_FILE}" )
+        fi
         terraform plan \
           -var="environment=${ENVIRONMENT}" \
           -out="${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
           -input=false \
           -no-color \
+          "${TF_ARGS[@]}" \
           2>&1 | tee "${CODEBUILD_SRC_DIR}/work/plan.txt"
       - echo "plan complete"
 

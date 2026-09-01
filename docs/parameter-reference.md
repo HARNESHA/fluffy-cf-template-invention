@@ -29,6 +29,7 @@ Complete reference for all parameters for the CloudFormation template.
 |---|---|---|---|---|
 | `TerraformDirectory` | String | Yes | `.` | Path within the repo to the Terraform root module. Use `.` for repo root |
 | `TerraformVersion` | String | Yes | `1.10.5` | Pinned Terraform CLI version installed by every build |
+| `TfVarsFile` | String | No | `""` | Relative path to a `.tfvars` file inside `TerraformDirectory` (e.g. `envs/dev.tfvars`). Passed to `terraform plan` / `terraform apply` via `-var-file`. Used to run the same config against different environment tfvar files. Leave empty for no tfvars file |
 | `BackendBucket` | String | Yes | — | S3 bucket for Terraform remote state |
 | `BackendKey` | String | Yes | — | State file S3 path. Recommended: `envs/{env}/{project}/terraform.tfstate` |
 | `BackendRegion` | String | Yes | `us-east-1` | Region of the Terraform state S3 bucket |

@@ -23,7 +23,7 @@ Metadata:
         Parameters: [RepositoryProvider, RepositoryName, RepositoryRegion, BranchName, CodeStarConnectionArn]
       - Label:
           default: "3. Terraform Configuration"
-        Parameters: [TerraformDirectory, TerraformVersion, BackendBucket, BackendKey, BackendRegion]
+        Parameters: [TerraformDirectory, TerraformVersion, TfVarsFile, BackendBucket, BackendKey, BackendRegion]
       - Label:
           default: "4. Deployment Mode"
         Parameters: [EnableApproval]
@@ -52,6 +52,7 @@ Metadata:
       CodeStarConnectionArn:   { default: "CodeStar Connections ARN (GitHub only)" }
       TerraformDirectory:      { default: "Terraform Root Directory (relative)" }
       TerraformVersion:        { default: "Terraform Version" }
+      TfVarsFile:              { default: "Terraform tfvars File (relative, optional)" }
       BackendBucket:           { default: "Terraform State S3 Bucket" }
       BackendKey:              { default: "Terraform State S3 Key Path" }
       BackendRegion:           { default: "Terraform State Backend Region" }
@@ -150,6 +151,15 @@ Parameters:
     Default: "1.10.5"
     AllowedPattern: "^\\d+\\.\\d+\\.\\d+$"
     ConstraintDescription: Must be a semantic version like 1.10.5
+
+  TfVarsFile:
+    Type: String
+    Description: >
+      Relative path to a .tfvars file (e.g. envs/dev.tfvars) inside the
+      TerraformDirectory. Passed to terraform plan/apply via -var-file.
+      Leave empty to run without a tfvars file.
+    Default: ""
+    AllowedPattern: ".*"
 
   BackendBucket:
     Type: String
@@ -737,6 +747,9 @@ Resources:
           - Name: TF_DIR
             Value: !Ref TerraformDirectory
             Type: PLAINTEXT
+          - Name: TF_VARS_FILE
+            Value: !Ref TfVarsFile
+            Type: PLAINTEXT
           - Name: TF_BACKEND_BUCKET
             Value: !Ref BackendBucket
             Type: PLAINTEXT
@@ -828,6 +841,9 @@ Resources:
           - Name: TF_DIR
             Value: !Ref TerraformDirectory
             Type: PLAINTEXT
+          - Name: TF_VARS_FILE
+            Value: !Ref TfVarsFile
+            Type: PLAINTEXT
           - Name: TF_BACKEND_BUCKET
             Value: !Ref BackendBucket
             Type: PLAINTEXT
@@ -918,6 +934,9 @@ Resources:
             Type: PLAINTEXT
           - Name: TF_DIR
             Value: !Ref TerraformDirectory
+            Type: PLAINTEXT
+          - Name: TF_VARS_FILE
+            Value: !Ref TfVarsFile
             Type: PLAINTEXT
           - Name: TF_BACKEND_BUCKET
             Value: !Ref BackendBucket
@@ -1013,15 +1032,21 @@ Resources:
                 - |
                   cd "${CODEBUILD_SRC_DIR}/work/repo/${TF_DIR}"
                   terraform init \
+                    -backend-config="envs/${ENVIRONMENT}.tfbackend" \
                     -backend-config="bucket=${TF_BACKEND_BUCKET}" \
                     -backend-config="key=${TF_BACKEND_KEY}" \
                     -backend-config="region=${TF_BACKEND_REGION}" \
                     -backend-config="encrypt=true" \
                     -input=false -no-color
                   terraform validate -no-color
+                  if [ -n "${TF_VARS_FILE}" ] && [ "${TF_VARS_FILE}" != "undefined" ]; then
+                    TF_VARS_ARGS=(-var-file="${TF_VARS_FILE}")
+                  else
+                    TF_VARS_ARGS=()
+                  fi
                   terraform plan -var="environment=${ENVIRONMENT}" \
                     -out="${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
-                    -input=false -no-color 2>&1 | tee "${CODEBUILD_SRC_DIR}/work/plan.txt"
+                    -input=false -no-color "${TF_VARS_ARGS[@]}" 2>&1 | tee "${CODEBUILD_SRC_DIR}/work/plan.txt"
                   echo "--- Guarding against destroy/replace ---"
                   if grep -E "must be replaced|will be destroyed" "${CODEBUILD_SRC_DIR}/work/plan.txt" ; then
                     echo "ERROR: Plan contains destroy/replace actions. Auto-apply blocked."

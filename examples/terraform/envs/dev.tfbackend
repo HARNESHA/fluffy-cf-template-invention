@@ -1,0 +1,4 @@
+bucket   = "826136930409-terraform-state-prod"
+key      = "envs/dev/terraform.tfstate"
+region   = "us-east-1"
+encrypt  = true
