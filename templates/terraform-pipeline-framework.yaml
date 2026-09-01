@@ -722,7 +722,7 @@ Resources:
       TimeoutInMinutes: 60
       QueuedTimeoutInMinutes: 480
       Artifacts:
-        Type: NO_ARTIFACTS
+        Type: CODEPIPELINE
       Cache:
         Type: S3
         Location: !Sub "${ArtifactBucket}/build-cache/${ProjectName}-${Environment}-plan"
@@ -814,7 +814,7 @@ Resources:
       TimeoutInMinutes: 120
       QueuedTimeoutInMinutes: 480
       Artifacts:
-        Type: NO_ARTIFACTS
+        Type: CODEPIPELINE
       Cache:
         Type: S3
         Location: !Sub "${ArtifactBucket}/build-cache/${ProjectName}-${Environment}-apply"
@@ -1126,7 +1126,8 @@ Resources:
                 ProjectName: !Sub "${ProjectName}-${Environment}-tf-plan"
               InputArtifacts:
                 - Name: SourceOutput
-              OutputArtifacts: []
+              OutputArtifacts:
+                - Name: PlanOutput
               RunOrder: 1
 
         - !If
@@ -1164,7 +1165,8 @@ Resources:
                 ProjectName: !Sub "${ProjectName}-${Environment}-tf-apply"
               InputArtifacts:
                 - Name: SourceOutput
-              OutputArtifacts: []
+              OutputArtifacts:
+                - Name: ApplyOutput
               RunOrder: 1
       Tags:
         - Key: Name
