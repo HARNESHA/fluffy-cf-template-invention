@@ -2,6 +2,10 @@ terraform {
   required_version = ">= 1.0.0"
 
   required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
     null = {
       source  = "hashicorp/null"
       version = ">= 3.0"
@@ -17,7 +21,7 @@ terraform {
   backend "s3" {}
 }
 
-provider "null" {}
+# The AWS and null provider configurations live in provider.tf.
 
 # -----------------------------------------------------------------------------
 # Variables - environment is injected by the pipeline via -var; the remaining

@@ -112,14 +112,23 @@ aws cloudformation describe-stacks \
 
 ## Step 5: Configure the Terraform repository
 
-### Approval mode
-
-Copy the buildspecs to the **root** of the Terraform repository:
+Copy the buildspecs and the example Terraform module to the **root** of the
+Terraform repository:
 
 ```bash
-cp buildspec/buildspec-plan.yml  /path/to/your-terraform-repo/buildspec-plan.yml
-cp buildspec/buildspec-apply.yml /path/to/your-terraform-repo/buildspec-apply.yml
+cp buildspec/buildspec-plan.yml    /path/to/your-terraform-repo/buildspec-plan.yml
+cp buildspec/buildspec-apply.yml   /path/to/your-terraform-repo/buildspec-apply.yml
+cp examples/terraform/main.tf      /path/to/your-terraform-repo/main.tf
+cp examples/terraform/provider.tf  /path/to/your-terraform-repo/provider.tf
+cp -r examples/terraform/envs/     /path/to/your-terraform-repo/
 ```
+
+- `provider.tf` keeps the AWS provider config (region, `default_tags`, and the
+  `assume_role` used to delegate resource CRUD to the execution role). State
+  access (`terraform init`) stays on the CodeBuild role in the repo account.
+- The `envs/` dir must contain `<environment>.tfvars` (selected via the
+  `TfVarsFile` stack parameter) and `<environment>.tfbackend` (selected by the
+  `envs/${ENVIRONMENT}.tfbackend` init flag).
 
 ### Auto mode (EnableApproval=false)
 
@@ -131,8 +140,8 @@ cp buildspec/buildspec-auto.yml /path/to/your-terraform-repo/buildspec-auto.yml
 
 ```bash
 cd /path/to/your-terraform-repo
-git add buildspec-*.yml
-git commit -m "Add CI/CD buildspecs"
+git add buildspec-*.yml main.tf provider.tf envs/
+git commit -m "Add CI/CD buildspecs and Terraform module"
 git push origin main
 ```
 

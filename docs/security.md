@@ -68,6 +68,14 @@ Execution role trust policy (template: `iam/trust-execution-role.json`):
 
 The `ExternalId` condition prevents confused-deputy attacks.
 
+The execution role is assumed via the AWS provider's `assume_role` (see
+`examples/terraform/provider.tf`), not through credential swapping in the
+buildspec. This means `terraform init` and every S3 state operation run as the
+**CodeBuild role in the repo account**, so the execution role needs **no**
+permissions on the state bucket — it only needs permissions for the resources
+it deploys in its own account. This keeps cross-account setups simple: repo
+account owns the state bucket, each execution role owns its resources.
+
 ### Auto-mode guard (non-approval)
 
 The auto CodeBuild project refuses to run `terraform apply` when the plan

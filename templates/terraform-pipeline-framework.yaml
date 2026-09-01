@@ -977,15 +977,12 @@ Resources:
                   export AWS_REGION="${AWS_DEFAULT_REGION:-${REPOSITORY_REGION}}"
                 - |
                   if [ "${TF_EXECUTION_ROLE_ARN}" != "NONE" ] && [ -n "${TF_EXECUTION_ROLE_ARN}" ]; then
-                    CREDS=$(aws sts assume-role \
-                      --role-arn "${TF_EXECUTION_ROLE_ARN}" \
-                      --role-session-name "TerraformAuto-${PROJECT_NAME}-${ENVIRONMENT}" \
-                      --duration-seconds 7200 \
-                      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
-                      --output text)
-                    export AWS_ACCESS_KEY_ID=$(echo $CREDS | awk '{print $1}')
-                    export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | awk '{print $2}')
-                    export AWS_SESSION_TOKEN=$(echo $CREDS | awk '{print $3}')
+                    echo "AWS provider will assume execution role: ${TF_EXECUTION_ROLE_ARN}"
+                    export TF_VAR_tf_execution_role_arn="${TF_EXECUTION_ROLE_ARN}"
+                    export TF_VAR_tf_role_session_name="TerraformAuto-${PROJECT_NAME}-${ENVIRONMENT}"
+                  else
+                    export TF_VAR_tf_execution_role_arn=""
+                    echo "No execution role configured - using CodeBuild instance role"
                   fi
             build:
               commands:

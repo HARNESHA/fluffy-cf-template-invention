@@ -84,21 +84,15 @@ phases:
       - 'echo "Pipeline     : ${PIPELINE_NAME}"'
       - 'echo "Execution ID : ${PIPELINE_EXECUTION_ID}"'
       - 'echo "Plan Key     : s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/tfplan.binary"'
-      # Assume Terraform execution role if configured
+      # Keep the S3 backend on the CodeBuild role (repo account). The AWS
+      # provider assumes the execution role for resource CRUD only.
       - |
         if [ "${TF_EXECUTION_ROLE_ARN}" != "NONE" ] && [ -n "${TF_EXECUTION_ROLE_ARN}" ]; then
-          echo "Assuming execution role: ${TF_EXECUTION_ROLE_ARN}"
-          CREDS=$(aws sts assume-role \
-            --role-arn "${TF_EXECUTION_ROLE_ARN}" \
-            --role-session-name "TerraformPlan-${PROJECT_NAME}-${PIPELINE_EXECUTION_ID}" \
-            --duration-seconds 3600 \
-            --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
-            --output text)
-          export AWS_ACCESS_KEY_ID=$(echo $CREDS | awk '{print $1}')
-          export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | awk '{print $2}')
-          export AWS_SESSION_TOKEN=$(echo $CREDS | awk '{print $3}')
-          echo "Successfully assumed execution role"
+          echo "AWS provider will assume execution role: ${TF_EXECUTION_ROLE_ARN}"
+          export TF_VAR_tf_execution_role_arn="${TF_EXECUTION_ROLE_ARN}"
+          export TF_VAR_tf_role_session_name="TerraformPlan-${PROJECT_NAME}-${PIPELINE_EXECUTION_ID}"
         else
+          export TF_VAR_tf_execution_role_arn=""
           echo "No execution role configured - using CodeBuild instance role"
         fi
       - echo "=== [PRE_BUILD] Environment ready ==="
