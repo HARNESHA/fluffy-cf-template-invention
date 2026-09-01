@@ -153,11 +153,7 @@ phases:
       - |
         if [ "${SNS_TOPIC_ARN}" != "DISABLED" ] && [ -n "${SNS_TOPIC_ARN}" ] && [ "${BUILD_STATUS}" = "1" ]; then
           PIPELINE_URL="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${PIPELINE_NAME}/view"
-          if [ -s "${CODEBUILD_SRC_DIR}/work/plan.txt" ]; then
-            PLAN_DETAILS=$(tail -c 150000 "${CODEBUILD_SRC_DIR}/work/plan.txt")
-          else
-            PLAN_DETAILS="(no plan.txt produced)"
-          fi
+          PLAN_DL_URL=$(aws s3 presign "s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/plan.txt" --expires-in 604800)
           MESSAGE=$(printf '%s\n' \
             "TERRAFORM PLAN READY FOR REVIEW" \
             "=========================================" \
@@ -169,13 +165,11 @@ phases:
             "-----------------------------------------" \
             "Plan Summary  : ${PLAN_SUMMARY}" \
             "-----------------------------------------" \
-            "Pipeline      : ${PIPELINE_URL}" \
+            "Plan Download : ${PLAN_DL_URL}" \
             "Plan Artifact : ${PLAN_TXT_URL}" \
+            "Pipeline      : ${PIPELINE_URL}" \
             "=========================================" \
-            "Action Required: Review the plan and approve or reject in CodePipeline." \
-            "" \
-            "--- FULL PLAN OUTPUT ---" \
-            "${PLAN_DETAILS}")
+            "Action Required: Review the plan and approve or reject in CodePipeline.")
           aws sns publish \
             --topic-arn "${SNS_TOPIC_ARN}" \
             --subject "REVIEW REQUIRED: Terraform Plan - ${PROJECT_NAME} (${ENVIRONMENT})" \

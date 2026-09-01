@@ -153,9 +153,16 @@ The EventBridge trigger starts the pipeline/build automatically on push.
 
 For `EnableApproval=true`, when the pipeline reaches the **Approve** stage:
 
-- Open the pipeline console and review the plan summary (email notification is sent too).
-- Choose **Approve** (or **Reject**).
+- A plan notification is emailed to `NotificationEmail` — it contains the plan
+  **summary**, a **presigned download link to `plan.txt`** (valid 7 days, so you
+  can review the full plan from mail without console login), and a link to the
+  pipeline console.
+- Open the pipeline console and review the plan, then choose **Approve** (or **Reject**).
 - On approval, the **Apply** stage downloads the exact plan binary and applies it.
+
+> State is written to S3 only on apply: the S3 object at `BackendKey`
+> (`envs/test/terraform.tfstate`) appears after the **Apply** stage runs.
+> `terraform plan` reads state but does not persist it.
 
 ---
 
