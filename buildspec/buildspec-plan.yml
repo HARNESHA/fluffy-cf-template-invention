@@ -63,22 +63,27 @@ phases:
       - echo "=== [PRE_BUILD] Configuring environment ==="
       - export RESOLVED_COMMIT_ID="${COMMIT_ID}"
       - |
-        if [ -z "${RESOLVED_COMMIT_ID}" ] || [ "${RESOLVED_COMMIT_ID}" = "undefined" ]; then
-          echo "COMMIT_ID not injected by pipeline - falling back to repo HEAD"
-          RESOLVED_COMMIT_ID=$(git -C "${CODEBUILD_SRC_DIR}/SourceOutput" rev-parse HEAD)
-          export RESOLVED_COMMIT_ID
+        if [ -n "${CODEBUILD_RESOLVED_SOURCE_VERSION}" ] && [ "${CODEBUILD_RESOLVED_SOURCE_VERSION}" != "undefined" ]; then
+          RESOLVED_COMMIT_ID="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+        elif [ -n "${RESOLVED_COMMIT_ID}" ] && [ "${RESOLVED_COMMIT_ID}" != "undefined" ] && [[ "${RESOLVED_COMMIT_ID}" != *"#"* ]]; then
+          :
+        else
+          echo "No valid COMMIT_ID - using repo HEAD"
+          RESOLVED_COMMIT_ID=$(git -C "${CODEBUILD_SRC_DIR}" rev-parse HEAD)
         fi
+        export RESOLVED_COMMIT_ID
+        echo "Resolved commit: ${RESOLVED_COMMIT_ID}"
       - export PLAN_ARTIFACT_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
       - export BUILD_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       - export AWS_REGION="${AWS_DEFAULT_REGION}"
-      - echo "Project      : ${PROJECT_NAME}"
-      - echo "Environment  : ${ENVIRONMENT}"
-      - echo "Branch       : ${BRANCH_NAME}"
-      - echo "Commit       : ${RESOLVED_COMMIT_ID}"
-      - echo "TF Directory : ${TF_DIR}"
-      - echo "Pipeline     : ${PIPELINE_NAME}"
-      - echo "Execution ID : ${PIPELINE_EXECUTION_ID}"
-      - echo "Plan Key     : s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/tfplan.binary"
+      - 'echo "Project      : ${PROJECT_NAME}"'
+      - 'echo "Environment  : ${ENVIRONMENT}"'
+      - 'echo "Branch       : ${BRANCH_NAME}"'
+      - 'echo "Commit       : ${RESOLVED_COMMIT_ID}"'
+      - 'echo "TF Directory : ${TF_DIR}"'
+      - 'echo "Pipeline     : ${PIPELINE_NAME}"'
+      - 'echo "Execution ID : ${PIPELINE_EXECUTION_ID}"'
+      - 'echo "Plan Key     : s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/tfplan.binary"'
       # Assume Terraform execution role if configured
       - |
         if [ "${TF_EXECUTION_ROLE_ARN}" != "NONE" ] && [ -n "${TF_EXECUTION_ROLE_ARN}" ]; then
@@ -104,7 +109,7 @@ phases:
   build:
     commands:
       - echo "=== [BUILD] Starting Terraform workflow ==="
-      - cd "${CODEBUILD_SRC_DIR}/SourceOutput/${TF_DIR}"
+      - cd "${CODEBUILD_SRC_DIR}/${TF_DIR}"
 
       # terraform init
       - echo "--- terraform init ---"

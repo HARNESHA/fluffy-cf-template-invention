@@ -1123,8 +1123,7 @@ Resources:
                 ProjectName: !Sub "${ProjectName}-${Environment}-tf-plan"
               InputArtifacts:
                 - Name: SourceOutput
-              OutputArtifacts:
-                - Name: PlanOutput
+              OutputArtifacts: []
               RunOrder: 1
 
         - !If
@@ -1162,8 +1161,7 @@ Resources:
                 ProjectName: !Sub "${ProjectName}-${Environment}-tf-apply"
               InputArtifacts:
                 - Name: SourceOutput
-              OutputArtifacts:
-                - Name: ApplyOutput
+              OutputArtifacts: []
               RunOrder: 1
       Tags:
         - Key: Name
