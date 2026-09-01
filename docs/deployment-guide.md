@@ -12,9 +12,8 @@ single AWS account.
 | Requirement | Details |
 |---|---|
 | AWS account | The account where both the Terraform repositories and the pipeline live |
-| Shared artifact bucket | One versioned, SSE-KMS-encrypted S3 bucket (`ArtifactBucket`) created per the artifact bucket guide |
+| Shared S3 bucket | **One** versioned, SSE-KMS-encrypted S3 bucket for pipeline artifacts, Terraform plan binaries/logs, and remote state (`BucketName`) |
 | CodeCommit repository | The Terraform repository already exists in this account (or a GitHub repo + CodeStar connection) |
-| Terraform state bucket | S3 bucket for Terraform remote state (`BackendBucket`) |
 
 ### Tooling
 
@@ -23,7 +22,7 @@ single AWS account.
 
 ---
 
-## Step 1: Create the shared artifact bucket (once per account)
+## Step 1: Create the shared bucket (once per account)
 
 Follow [docs/artifact-bucket-guide.md](artifact-bucket-guide.md) to create one
 bucket (e.g. `tf-artifacts-<acct>`) with:
@@ -32,7 +31,9 @@ bucket (e.g. `tf-artifacts-<acct>`) with:
 - Public access fully blocked
 - Optional lifecycle rules for archival/deletion
 
-You'll pass this bucket name as `ArtifactBucket` in every stack in this account.
+This single bucket serves the CodePipeline artifact store, Terraform plan
+binaries/logs, and Terraform remote state. You'll pass it as `BucketName` in
+every stack in this account. State lives at `{ProjectName}/state/{Environment}/terraform.tfstate`.
 
 ---
 
@@ -68,12 +69,10 @@ Key values you must set:
   {"ParameterKey": "CodeStarConnectionArn", "ParameterValue": ""},
   {"ParameterKey": "TerraformDirectory", "ParameterValue": "."},
   {"ParameterKey": "TfVarsFile",       "ParameterValue": "envs/prod.tfvars"},
-  {"ParameterKey": "BackendBucket",      "ParameterValue": "my-org-terraform-state-prod"},
-  {"ParameterKey": "BackendKey",         "ParameterValue": "envs/prod/my-project/terraform.tfstate"},
-  {"ParameterKey": "EnableApproval",     "ParameterValue": "true"},
+  {"ParameterKey": "BucketName",        "ParameterValue": "tf-artifacts-826136930409"},
+  {"ParameterKey": "EnableApproval",    "ParameterValue": "true"},
   {"ParameterKey": "CreateIamRoles",     "ParameterValue": "true"},
   {"ParameterKey": "RolePath",           "ParameterValue": "/application_role/"},
-  {"ParameterKey": "ArtifactBucket",     "ParameterValue": "tf-artifacts-826136930409"},
   {"ParameterKey": "NotificationEmail",  "ParameterValue": "team@myorg.com"}
 ]
 ```
@@ -160,9 +159,10 @@ For `EnableApproval=true`, when the pipeline reaches the **Approve** stage:
 - Open the pipeline console and review the plan, then choose **Approve** (or **Reject**).
 - On approval, the **Apply** stage downloads the exact plan binary and applies it.
 
-> State is written to S3 only on apply: the S3 object at `BackendKey`
-> (`envs/test/terraform.tfstate`) appears after the **Apply** stage runs.
-> `terraform plan` reads state but does not persist it.
+> State is written to S3 only on apply: the S3 object at
+> `{ProjectName}/state/{Environment}/terraform.tfstate` (e.g.
+> `org-infra/state/dev/terraform.tfstate`) appears after the **Apply** stage
+> runs. `terraform plan` reads state but does not persist it.
 
 ---
 
@@ -171,26 +171,29 @@ For `EnableApproval=true`, when the pipeline reaches the **Approve** stage:
 ### Verifying remote state in S3
 
 State is written to S3 only when the **Apply** stage succeeds. The object lives
-at `BackendKey` in `BackendBucket` (us-east-1) — both come from your parameter
-file. After a successful apply, confirm:
+at `{ProjectName}/state/{Environment}/terraform.tfstate` in the shared
+`BucketName` bucket — the key is derived (not a parameter). After a successful
+apply, confirm:
 
 ```bash
-aws s3 ls s3://826136930409-terraform-state-prod-1788254151/envs/dev/
-aws s3api get-object --bucket 826136930409-terraform-state-prod-1788254151 \
-  --key envs/dev/terraform.tfstate /tmp/terraform.tfstate
+aws s3 ls s3://tf-artifacts-826136930409/org-infra/state/dev/
+aws s3api get-object --bucket tf-artifacts-826136930409 \
+  --key org-infra/state/dev/terraform.tfstate /tmp/terraform.tfstate
 grep '"serial"' /tmp/terraform.tfstate || true
 ```
 
 Sanity rules to keep state location predictable:
 
-- `BackendKey` (parameter) and `envs/<env>.tfbackend#key` must match — the
-  CodeBuild `-backend-config` flags override the file, so a mismatch means the
-  stack wins and the file is only a fallback.
-- `BackendBucket` (parameter) and `envs/<env>.tfbackend#bucket` must match.
+- The pipeline derives the state key as `{ProjectName}/state/{Environment}/terraform.tfstate`
+  and overrides the `.tfbackend` file via `-backend-config` flags — keep
+  `envs/<env>.tfbackend#key` aligned with that value (file is only a fallback).
+- `BucketName` (parameter) and `envs/<env>.tfbackend#bucket` must match.
 - Always deploy the stack and the repo files from the **same** parameter set for
   an environment (e.g. `pipeline-dev.json` ⇒ `envs/dev.tfbackend`, `envs/dev.tfvars`).
 - A plan-only run reads state but does not persist it; recreated demo resources on
   every run is a sign Apply never completed, not a framework fault.
+- CodePipeline writes its stage artifacts at the bucket root (`SourceOutput/…`);
+  plan binaries/logs live under `{ProjectName}/terraform-artifacts/…`.
 
 ### Updating Terraform version
 
@@ -213,12 +216,13 @@ The stack will replace the pipeline with the auto CodeBuild project (or vice ver
 
 1. Copy the relevant buildspec(s) to the new repo.
 2. Deploy a new stack with its own parameter file (unique `ProjectName`/`Environment`).
-3. Point `ArtifactBucket` at the same shared bucket.
+3. Use the same shared bucket (`BucketName`) as the other stacks in the account.
 4. Push to trigger.
 
 ### Adding an environment to the same repo
 
-Deploy another stack with a different `Environment` (and a distinct `BackendKey`).
+Deploy another stack with a different `Environment`. State is kept distinct
+automatically via the `{ProjectName}/state/{Environment}/terraform.tfstate` key.
 
 ---
 

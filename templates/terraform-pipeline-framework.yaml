@@ -15,7 +15,7 @@ Metadata:
         Parameters: [RepositoryProvider, RepositoryName, RepositoryRegion, BranchName, CodeStarConnectionArn]
       - Label:
           default: "3. Terraform Configuration"
-        Parameters: [TerraformDirectory, TerraformVersion, TfVarsFile, BackendBucket, BackendKey, BackendRegion]
+        Parameters: [TerraformDirectory, TerraformVersion, TfVarsFile]
       - Label:
           default: "4. Deployment Mode"
         Parameters: [EnableApproval]
@@ -23,8 +23,8 @@ Metadata:
           default: "5. IAM Roles"
         Parameters: [CreateIamRoles, RolePath, PipelineRoleArn, CodeBuildRoleArn, ExecutionRoleArn]
       - Label:
-          default: "6. Artifact Storage"
-        Parameters: [ArtifactBucket, ArtifactPrefix]
+          default: "6. Shared S3 Bucket"
+        Parameters: [BucketName]
       - Label:
           default: "7. Build Configuration"
         Parameters: [BuildImage, BuildComputeType]
@@ -45,17 +45,13 @@ Metadata:
       TerraformDirectory:      { default: "Terraform Root Directory (relative)" }
       TerraformVersion:        { default: "Terraform Version" }
       TfVarsFile:              { default: "Terraform tfvars File (relative, optional)" }
-      BackendBucket:           { default: "Terraform State S3 Bucket" }
-      BackendKey:              { default: "Terraform State S3 Key Path" }
-      BackendRegion:           { default: "Terraform State Backend Region" }
+      BucketName:              { default: "Shared S3 Bucket (pipeline artifacts, terraform artifacts, state)" }
       EnableApproval:          { default: "Manual Approval Gate (true/false)" }
       CreateIamRoles:          { default: "Create IAM Roles in Template (true/false)" }
       RolePath:                { default: "IAM Role Path" }
       PipelineRoleArn:         { default: "Pre-existing Pipeline Role ARN (when CreateIamRoles=false)" }
       CodeBuildRoleArn:        { default: "Pre-existing CodeBuild Role ARN (when CreateIamRoles=false)" }
       ExecutionRoleArn:        { default: "Terraform Execution Role ARN (optional)" }
-      ArtifactBucket:          { default: "Artifact S3 Bucket (shared)" }
-      ArtifactPrefix:          { default: "Artifact S3 Key Prefix" }
       BuildImage:              { default: "CodeBuild Build Image URI" }
       BuildComputeType:        { default: "CodeBuild Compute Type" }
       NotificationEmail:       { default: "Notification Email Address" }
@@ -145,20 +141,13 @@ Parameters:
     Default: ""
     AllowedPattern: ".*"
 
-  BackendBucket:
-    Type: String
-    Description: S3 bucket name for Terraform remote state storage.
-
-  BackendKey:
+  BucketName:
     Type: String
     Description: >
-      S3 key path for the Terraform state file.
-      Example: envs/test/terraform.tfstate
-
-  BackendRegion:
-    Type: String
-    Description: AWS Region of the Terraform state S3 bucket.
-    Default: us-east-1
+      SINGLE shared S3 bucket for this project: CodePipeline artifacts,
+      Terraform plan binaries/logs (under ${ProjectName}/terraform-artifacts/...),
+      and remote state (under ${ProjectName}/state/${Environment}/terraform.tfstate).
+      Must exist with versioning + SSE-KMS enabled. See docs/artifact-bucket-guide.md.
 
   # Deployment Mode
   EnableApproval:
@@ -207,6 +196,7 @@ Parameters:
     AllowedPattern: "^(arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512})?$"
     Default: ""
 
+  # Execution Role
   ExecutionRoleArn:
     Type: String
     Description: >
@@ -214,20 +204,6 @@ Parameters:
       Leave blank to use the CodeBuild role's own permissions.
     AllowedPattern: "^(arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512})?$"
     Default: ""
-
-  # Artifact Storage
-  ArtifactBucket:
-    Type: String
-    Description: >
-      SINGLE shared S3 bucket that stores plan binaries, logs and build cache for
-      ALL environments/projects in this account. Must exist with versioning +
-      SSE-KMS enabled. See docs/artifact-bucket-guide.md.
-
-  ArtifactPrefix:
-    Type: String
-    Description: >
-      Top-level key prefix inside ArtifactBucket for this framework's artifacts.
-    Default: "terraform-artifacts"
 
   # Build Configuration
   BuildImage:
@@ -360,8 +336,8 @@ Resources:
               - s3:ListBucket
               - s3:DeleteObject
             Resource:
-              - !Sub "arn:aws:s3:::${ArtifactBucket}"
-              - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+              - !Sub "arn:aws:s3:::${BucketName}"
+              - !Sub "arn:aws:s3:::${BucketName}/*"
           - Fn::If:
               - IsCodeCommit
               - Sid: CodeCommitSource
@@ -457,8 +433,8 @@ Resources:
               - s3:ListBucket
               - s3:DeleteObject
             Resource:
-              - !Sub "arn:aws:s3:::${ArtifactBucket}"
-              - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+              - !Sub "arn:aws:s3:::${BucketName}"
+              - !Sub "arn:aws:s3:::${BucketName}/*"
           - Sid: S3TerraformStateAccess
             Effect: Allow
             Action:
@@ -466,8 +442,8 @@ Resources:
               - s3:PutObject
               - s3:ListBucket
             Resource:
-              - !Sub "arn:aws:s3:::${BackendBucket}"
-              - !Sub "arn:aws:s3:::${BackendBucket}/*"
+              - !Sub "arn:aws:s3:::${BucketName}"
+              - !Sub "arn:aws:s3:::${BucketName}/*"
           - Fn::If:
               - IsCodeCommit
               - Sid: CodeCommitGitPull
@@ -714,13 +690,13 @@ Resources:
             Value: !Ref TfVarsFile
             Type: PLAINTEXT
           - Name: TF_BACKEND_BUCKET
-            Value: !Ref BackendBucket
+            Value: !Ref BucketName
             Type: PLAINTEXT
           - Name: TF_BACKEND_KEY
-            Value: !Ref BackendKey
+            Value: !Sub "${ProjectName}/state/${Environment}/terraform.tfstate"
             Type: PLAINTEXT
           - Name: TF_BACKEND_REGION
-            Value: !Ref BackendRegion
+            Value: !Ref AWS::Region
             Type: PLAINTEXT
           - Name: PROJECT_NAME
             Value: !Ref ProjectName
@@ -738,10 +714,10 @@ Resources:
             Value: "#{SourceVariables.CommitId}"
             Type: PLAINTEXT
           - Name: ARTIFACT_BUCKET
-            Value: !Ref ArtifactBucket
+            Value: !Ref BucketName
             Type: PLAINTEXT
           - Name: ARTIFACT_PREFIX
-            Value: !Ref ArtifactPrefix
+            Value: !Sub "${ProjectName}/terraform-artifacts"
             Type: PLAINTEXT
           - Name: SNS_TOPIC_ARN
             Value: !If [EnableEmailNotifications, !Ref PipelineNotificationTopic, "DISABLED"]
@@ -806,13 +782,13 @@ Resources:
             Value: !Ref TfVarsFile
             Type: PLAINTEXT
           - Name: TF_BACKEND_BUCKET
-            Value: !Ref BackendBucket
+            Value: !Ref BucketName
             Type: PLAINTEXT
           - Name: TF_BACKEND_KEY
-            Value: !Ref BackendKey
+            Value: !Sub "${ProjectName}/state/${Environment}/terraform.tfstate"
             Type: PLAINTEXT
           - Name: TF_BACKEND_REGION
-            Value: !Ref BackendRegion
+            Value: !Ref AWS::Region
             Type: PLAINTEXT
           - Name: PROJECT_NAME
             Value: !Ref ProjectName
@@ -830,10 +806,10 @@ Resources:
             Value: "#{SourceVariables.CommitId}"
             Type: PLAINTEXT
           - Name: ARTIFACT_BUCKET
-            Value: !Ref ArtifactBucket
+            Value: !Ref BucketName
             Type: PLAINTEXT
           - Name: ARTIFACT_PREFIX
-            Value: !Ref ArtifactPrefix
+            Value: !Sub "${ProjectName}/terraform-artifacts"
             Type: PLAINTEXT
           - Name: SNS_TOPIC_ARN
             Value: !If [EnableEmailNotifications, !Ref PipelineNotificationTopic, "DISABLED"]
@@ -898,13 +874,13 @@ Resources:
             Value: !Ref TfVarsFile
             Type: PLAINTEXT
           - Name: TF_BACKEND_BUCKET
-            Value: !Ref BackendBucket
+            Value: !Ref BucketName
             Type: PLAINTEXT
           - Name: TF_BACKEND_KEY
-            Value: !Ref BackendKey
+            Value: !Sub "${ProjectName}/state/${Environment}/terraform.tfstate"
             Type: PLAINTEXT
           - Name: TF_BACKEND_REGION
-            Value: !Ref BackendRegion
+            Value: !Ref AWS::Region
             Type: PLAINTEXT
           - Name: PROJECT_NAME
             Value: !Ref ProjectName
@@ -928,10 +904,10 @@ Resources:
             Value: !Ref CodeStarConnectionArn
             Type: PLAINTEXT
           - Name: ARTIFACT_BUCKET
-            Value: !Ref ArtifactBucket
+            Value: !Ref BucketName
             Type: PLAINTEXT
           - Name: ARTIFACT_PREFIX
-            Value: !Ref ArtifactPrefix
+            Value: !Sub "${ProjectName}/terraform-artifacts"
             Type: PLAINTEXT
           - Name: SNS_TOPIC_ARN
             Value: !If [EnableEmailNotifications, !Ref PipelineNotificationTopic, "DISABLED"]
@@ -1063,7 +1039,7 @@ Resources:
       RoleArn: !If [CreateIamRoles, !GetAtt PipelineRole.Arn, !Ref PipelineRoleArn]
       ArtifactStore:
         Type: S3
-        Location: !Ref ArtifactBucket
+        Location: !Ref BucketName
       RestartExecutionOnUpdate: false
       Stages:
 
@@ -1238,17 +1214,11 @@ Outputs:
     Export:
       Name: !Sub "${AWS::StackName}-PipelineRoleArn"
 
-  ArtifactBucket:
-    Description: Shared artifact S3 bucket
-    Value: !Ref ArtifactBucket
+  BucketName:
+    Description: Shared S3 bucket (pipeline artifacts, terraform artifacts, state)
+    Value: !Ref BucketName
     Export:
-      Name: !Sub "${AWS::StackName}-ArtifactBucket"
-
-  ArtifactPrefix:
-    Description: Artifact S3 key prefix
-    Value: !Ref ArtifactPrefix
-    Export:
-      Name: !Sub "${AWS::StackName}-ArtifactPrefix"
+      Name: !Sub "${AWS::StackName}-BucketName"
 
   SnsTopicArn:
     Description: ARN of the SNS notification topic

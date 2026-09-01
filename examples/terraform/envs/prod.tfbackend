@@ -1,4 +1,4 @@
-bucket   = "my-org-terraform-state-prod"
-key      = "envs/prod/payments-infra/terraform.tfstate"
+bucket   = "tf-artifacts-444455556666"
+key      = "org-infra/state/prod/terraform.tfstate"
 region   = "us-east-1"
 encrypt  = true

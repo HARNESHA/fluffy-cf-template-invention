@@ -30,9 +30,6 @@ Complete reference for all parameters for the CloudFormation template.
 | `TerraformDirectory` | String | Yes | `.` | Path within the repo to the Terraform root module. Use `.` for repo root |
 | `TerraformVersion` | String | Yes | `1.10.5` | Pinned Terraform CLI version installed by every build |
 | `TfVarsFile` | String | No | `""` | Relative path to a `.tfvars` file inside `TerraformDirectory` (e.g. `envs/dev.tfvars`). Passed to `terraform plan` / `terraform apply` via `-var-file`. Used to run the same config against different environment tfvar files. Leave empty for no tfvars file |
-| `BackendBucket` | String | Yes | — | S3 bucket for Terraform remote state |
-| `BackendKey` | String | Yes | — | State file S3 path. Recommended: `envs/{env}/{project}/terraform.tfstate` |
-| `BackendRegion` | String | Yes | `us-east-1` | Region of the Terraform state S3 bucket |
 
 ### Group 4: Deployment Mode
 
@@ -55,12 +52,16 @@ Complete reference for all parameters for the CloudFormation template.
 > within the build. See [security.md](security.md) for the recommended execution
 > role trust policy.
 
-### Group 6: Artifact Storage
+### Group 6: Shared S3 Bucket
+
+One bucket serves CodePipeline artifacts, Terraform plan binaries/logs, and
+Terraform remote state. Folders are scoped by project:
+`{ProjectName}/pipeline/…`, `{ProjectName}/terraform-artifacts/{repo}/{env}/{branch}/{commit}/…`,
+and state at `{ProjectName}/state/{Environment}/terraform.tfstate`.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `ArtifactBucket` | String | Yes | — | SINGLE shared S3 bucket for plan binaries, logs, build cache, and CodePipeline artifacts for all projects/environments. Must exist with versioning + SSE-KMS. See [artifact-bucket-guide.md](artifact-bucket-guide.md) |
-| `ArtifactPrefix` | String | No | `terraform-artifacts` | Top-level key prefix inside `ArtifactBucket` for this framework's artifacts |
+| `BucketName` | String | Yes | — | SINGLE shared S3 bucket (pipeline artifacts, terraform artifacts, remote state). Must exist with versioning + SSE-KMS. See [artifact-bucket-guide.md](artifact-bucket-guide.md) |
 
 ### Group 7: Build Configuration
 
@@ -114,8 +115,7 @@ re-plans.
 | `BuildProjectName` | `{StackName}-BuildProjectName` | CodeBuild project name (plan in approval mode, or auto project) |
 | `CodeBuildRoleArn` | `{StackName}-CodeBuildRoleArn` | ARN of the CodeBuild role (when template-created) |
 | `PipelineRoleArn` | `{StackName}-PipelineRoleArn` | ARN of the Pipeline role (approval mode, when template-created) |
-| `ArtifactBucket` | `{StackName}-ArtifactBucket` | Shared artifact bucket |
-| `ArtifactPrefix` | `{StackName}-ArtifactPrefix` | Artifact key prefix |
+| `BucketName` | `{StackName}-BucketName` | Shared S3 bucket (pipeline artifacts, terraform artifacts, state) |
 | `SnsTopicArn` | `{StackName}-SnsTopicArn` | ARN of the SNS topic |
 | `ProjectName` | `{StackName}-ProjectName` | Project identifier |
 | `Environment` | `{StackName}-Environment` | Environment label |

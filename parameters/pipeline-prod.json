@@ -40,20 +40,12 @@
     "ParameterValue": "envs/prod.tfvars"
   },
   {
-    "ParameterKey": "BackendBucket",
-    "ParameterValue": "my-org-terraform-state-prod"
-  },
-  {
-    "ParameterKey": "BackendKey",
-    "ParameterValue": "envs/prod/payments-infra/terraform.tfstate"
-  },
-  {
-    "ParameterKey": "BackendRegion",
-    "ParameterValue": "us-east-1"
-  },
-  {
     "ParameterKey": "EnableApproval",
     "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "BucketName",
+    "ParameterValue": "tf-artifacts-444455556666"
   },
   {
     "ParameterKey": "CreateIamRoles",
@@ -74,14 +66,6 @@
   {
     "ParameterKey": "ExecutionRoleArn",
     "ParameterValue": "arn:aws:iam::444455556666:role/TerraformExecutionRole-prod"
-  },
-  {
-    "ParameterKey": "ArtifactBucket",
-    "ParameterValue": "tf-artifacts-444455556666"
-  },
-  {
-    "ParameterKey": "ArtifactPrefix",
-    "ParameterValue": "terraform-artifacts"
   },
   {
     "ParameterKey": "BuildImage",

@@ -37,7 +37,7 @@ push events on the account's **default** EventBridge bus.
 │  │  └─────────────┘    │  CloudWatch log groups          │ │
 │  │                      └────────────────────────────────┘ │
 │  │                                                          │
-│  │  Shared S3 artifact bucket (tf-artifacts-<acct>)         │
+│  │  Shared S3 bucket: artifacts + state (tf-artifacts-<acct>) │
 │  └────────────────────────────────────────────────────────┘
 └────────────────────────────────────────────────────────┘
 ```
@@ -138,21 +138,22 @@ the template uses the pre-existing `PipelineRoleArn` / `CodeBuildRoleArn`.
 ## Artifact Flow (shared bucket)
 
 ```
-Shared S3 bucket (ArtifactBucket, e.g. tf-artifacts-<acct>)
+Shared S3 bucket (BucketName, e.g. tf-artifacts-<acct>)
 │
-├── terraform-artifacts/                     ← ArtifactPrefix
-│   └── <repository>/<environment>/<branch>/
-│       ├── plans/<commit-id>/
-│       │   ├── tfplan.binary               ← plan binary (Plan uploads, Apply downloads)
-│       │   └── plan.txt                    ← human-readable plan
-│       └── logs/<codebuild-build-id>/
-│           └── apply.txt                   ← apply log
-├── build-cache/<project>-<env>-<plan|apply|auto>/   ← CodeBuild provider cache
-└── <pipeline-name>/                        ← CodePipeline managed artifact store
+├── <project>/                               ← one project per stack (${ProjectName})
+│   ├── terraform-artifacts/                 ← plan binaries, plan.txt, apply logs
+│   │   └── <repository>/<environment>/<branch>/
+│   │       ├── plans/<commit-id>/
+│   │       │   ├── tfplan.binary            ← plan binary (Plan uploads, Apply downloads)
+│   │       │   └── plan.txt                 ← human-readable plan
+│   │       └── logs/<codebuild-build-id>/
+│   │           └── apply.txt                ← apply log
+│   └── state/<environment>/terraform.tfstate  ← Terraform remote state
+└── <pipeline-name>/                         ← CodePipeline managed artifact store (bucket root)
 ```
 
 The plan binary is shared between Plan and Apply via the deterministic S3 key
-`{ArtifactPrefix}/{RepositoryName}/{Environment}/{BranchName}/plans/{CommitId}/tfplan.binary`,
+`{ProjectName}/terraform-artifacts/{RepositoryName}/{Environment}/{BranchName}/plans/{CommitId}/tfplan.binary`,
 guaranteeing Apply uses the exact reviewed binary. See
 [artifact-bucket-guide.md](artifact-bucket-guide.md) for bucket setup and
 retention.
@@ -172,6 +173,6 @@ account:
     └── Logs:        /codebuild/payments-infra-prod-tf-plan
 ```
 
-All stacks share one governed artifact bucket (`tf-artifacts-<acct>`), with
-key prefixes (`<repo>/<env>/<branch>/`) isolating each pipeline's artifacts.
-No cross-project interference.
+All stacks share one governed S3 bucket (`tf-artifacts-<acct>`), with
+`<project>/` prefixes isolating each pipeline's artifacts and `state/<env>/`
+keys isolating state. No cross-project interference.
