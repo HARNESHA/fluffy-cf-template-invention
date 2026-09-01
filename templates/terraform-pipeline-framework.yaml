@@ -730,6 +730,9 @@ Resources:
           - Name: PIPELINE_NAME
             Value: !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
             Type: PLAINTEXT
+          - Name: PIPELINE_EXECUTION_ID
+            Value: "#{SourceVariables.ExecutionId}"
+            Type: PLAINTEXT
       Source:
         Type: CODEPIPELINE
         BuildSpec: buildspec-plan.yml
@@ -1095,10 +1098,6 @@ Resources:
                   Provider: Manual
                   Version: "1"
                 Configuration:
-                  NotificationArn: !If
-                    - EnableEmailNotifications
-                    - !Ref PipelineNotificationTopic
-                    - !Ref AWS::NoValue
                   CustomData: !Sub >-
                     REVIEW REQUIRED | Project: ${ProjectName} | Env: ${Environment} |
                     Repo: ${RepositoryName} | Branch: ${BranchName}

@@ -178,11 +178,3 @@ phases:
         fi
 
       - echo "=== [POST_BUILD] Complete ==="
-
-# ---------------------------------------------------------------------------
-# CACHE - Reuse providers from plan stage cache
-# ---------------------------------------------------------------------------
-cache:
-  paths:
-    - ".terraform/providers/**/*"
-    - "/root/.terraform.d/plugin-cache/**/*"

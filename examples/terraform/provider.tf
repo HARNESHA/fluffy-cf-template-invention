@@ -13,9 +13,10 @@ variable "tf_execution_role_arn" {
 }
 
 variable "tf_role_session_name" {
-  description = "Session name used when assuming tf_execution_role_arn."
+  description = "Session name used when assuming tf_execution_role_arn. Ephemeral so Plan and Apply builds can use distinct session names (Terraform 1.10+)."
   type        = string
   default     = "terraform-pipeline"
+  ephemeral   = true
 }
 
 provider "aws" {

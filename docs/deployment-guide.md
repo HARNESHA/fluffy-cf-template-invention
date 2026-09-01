@@ -154,11 +154,12 @@ The EventBridge trigger starts the pipeline/build automatically on push.
 
 For `EnableApproval=true`, when the pipeline reaches the **Approve** stage:
 
-- A plan notification is emailed to `NotificationEmail` — it contains the plan
-  **summary**, a **presigned download link to `plan.txt`** (valid 7 days, so you
-  can review the full plan from mail without console login), and a link to the
-  pipeline console.
-- Open the pipeline console and review the plan, then choose **Approve** (or **Reject**).
+- **One** plan notification email is sent to `NotificationEmail` — it contains
+  the plan **summary**, an **S3 console link to `plan.txt`** (no signed URLs),
+  and an **approval deep link** to the pipeline execution. (CodePipeline's own
+  "approval needed" email is disabled so you don't get duplicates.)
+- Open the plan from the email, review it, then choose **Approve** (or **Reject**)
+  from the approval link.
 - On approval, the **Apply** stage downloads the exact plan binary and applies it.
 
 > State is written to S3 only on apply: the S3 object at
