@@ -126,8 +126,10 @@ cp -r examples/terraform/envs/     /path/to/your-terraform-repo/
   `assume_role` used to delegate resource CRUD to the execution role). State
   access (`terraform init`) stays on the CodeBuild role in the repo account.
 - The `envs/` dir must contain `<environment>.tfvars` (selected via the
-  `TfVarsFile` stack parameter) and `<environment>.tfbackend` (selected by the
-  `envs/${ENVIRONMENT}.tfbackend` init flag).
+  `TfVarsFile` stack parameter). Keep the `<environment>.tfbackend` files in the
+  repo (the buildspec references them), but leave their values **empty** — the
+  pipeline overrides bucket/key/region/encrypt from stack parameters via
+  `-backend-config` flags, so the file is only a placeholder.
 
 ### Auto mode (EnableApproval=false)
 
@@ -184,12 +186,12 @@ grep '"serial"' /tmp/terraform.tfstate || true
 
 Sanity rules to keep state location predictable:
 
-- The pipeline derives the state key as `{ProjectName}/state/{Environment}/terraform.tfstate`
-  and overrides the `.tfbackend` file via `-backend-config` flags — keep
-  `envs/<env>.tfbackend#key` aligned with that value (file is only a fallback).
-- `BucketName` (parameter) and `envs/<env>.tfbackend#bucket` must match.
+- The pipeline derives the backend entirely from parameters — `BucketName` +
+  `{ProjectName}/state/{Environment}/terraform.tfstate` — and passes them to
+  `terraform init` as `-backend-config` flags that **override** the
+  `envs/<env>.tfbackend` file (kept empty in the repo as a placeholder).
 - Always deploy the stack and the repo files from the **same** parameter set for
-  an environment (e.g. `pipeline-dev.json` ⇒ `envs/dev.tfbackend`, `envs/dev.tfvars`).
+  an environment (e.g. `pipeline-dev.json` ⇒ `envs/dev.tfvars`).
 - A plan-only run reads state but does not persist it; recreated demo resources on
   every run is a sign Apply never completed, not a framework fault.
 - CodePipeline writes its stage artifacts at the bucket root (`SourceOutput/…`);

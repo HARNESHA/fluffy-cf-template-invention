@@ -331,6 +331,8 @@ Resources:
             Effect: Allow
             Action:
               - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketLocation
               - s3:PutObject
               - s3:GetBucketVersioning
               - s3:ListBucket
@@ -963,6 +965,7 @@ Resources:
               commands:
                 - |
                   cd "${CODEBUILD_SRC_DIR}/work/repo/${TF_DIR}"
+                  set -o pipefail
                   terraform init \
                     -backend-config="envs/${ENVIRONMENT}.tfbackend" \
                     -backend-config="bucket=${TF_BACKEND_BUCKET}" \

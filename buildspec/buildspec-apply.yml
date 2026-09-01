@@ -108,6 +108,7 @@ phases:
       # Apply the EXACT plan binary - no surprises
       - echo "--- terraform apply (saved plan) ---"
       - |
+        set -o pipefail
         terraform apply \
           -input=false \
           -no-color \

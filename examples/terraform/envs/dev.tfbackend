@@ -1,4 +1,7 @@
-bucket   = ""
-key      = ""
-region   = ""
-encrypt  = true
+# Backend values are injected by the pipeline via -backend-config flags
+# (bucket/key/region/encrypt come from the stack parameters).
+# This file is intentionally empty for the pipeline; fill it in for local runs:
+#   bucket = "tf-artifacts-826136930409"
+#   key    = "org-infra/state/dev/terraform.tfstate"
+#   region = "us-east-1"
+#   encrypt = true

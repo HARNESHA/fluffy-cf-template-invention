@@ -107,6 +107,7 @@ phases:
         else
           TF_VARS_ARGS=()
         fi
+        set -o pipefail
         terraform plan -var="environment=${ENVIRONMENT}" \
           -out="${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
           -input=false -no-color "${TF_VARS_ARGS[@]}" 2>&1 | tee "${CODEBUILD_SRC_DIR}/work/plan.txt"

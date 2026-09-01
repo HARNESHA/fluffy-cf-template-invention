@@ -106,6 +106,7 @@ phases:
         if [ -n "${TF_VARS_FILE}" ] && [ "${TF_VARS_FILE}" != "undefined" ]; then
           TF_ARGS+=( -var-file="${TF_VARS_FILE}" )
         fi
+        set -o pipefail
         terraform plan \
           -var="environment=${ENVIRONMENT}" \
           -out="${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
