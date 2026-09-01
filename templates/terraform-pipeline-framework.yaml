@@ -9,9 +9,7 @@ Description: >
   All plan binaries / logs / build caches are stored in ONE shared S3 bucket
   (ArtifactBucket) under a per-repo, per-env, per-branch, per-commit path.
 
-# ==============================================================================
 # METADATA
-# ==============================================================================
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -74,14 +72,10 @@ Metadata:
       Owner:                   { default: "Owner Tag" }
       TeamName:                { default: "Team Name Tag" }
 
-# ==============================================================================
 # PARAMETERS
-# ==============================================================================
 Parameters:
 
-  # ----------------------------------------------------------------------------
   # Project Identity
-  # ----------------------------------------------------------------------------
   ProjectName:
     Type: String
     Description: >
@@ -99,9 +93,7 @@ Parameters:
     AllowedValues: [dev, test, staging, prod, shared]
     Default: dev
 
-  # ----------------------------------------------------------------------------
   # Source Repository
-  # ----------------------------------------------------------------------------
   RepositoryProvider:
     Type: String
     Description: >
@@ -135,9 +127,7 @@ Parameters:
       Required only when RepositoryProvider=github.
     Default: ""
 
-  # ----------------------------------------------------------------------------
   # Terraform Configuration
-  # ----------------------------------------------------------------------------
   TerraformDirectory:
     Type: String
     Description: >
@@ -176,9 +166,7 @@ Parameters:
     Description: AWS Region of the Terraform state S3 bucket.
     Default: us-east-1
 
-  # ----------------------------------------------------------------------------
   # Deployment Mode
-  # ----------------------------------------------------------------------------
   EnableApproval:
     Type: String
     Description: >
@@ -188,9 +176,7 @@ Parameters:
     AllowedValues: ["true", "false"]
     Default: "false"
 
-  # ----------------------------------------------------------------------------
   # IAM Roles
-  # ----------------------------------------------------------------------------
   CreateIamRoles:
     Type: String
     Description: >
@@ -235,9 +221,7 @@ Parameters:
     AllowedPattern: "^(arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512})?$"
     Default: ""
 
-  # ----------------------------------------------------------------------------
   # Artifact Storage
-  # ----------------------------------------------------------------------------
   ArtifactBucket:
     Type: String
     Description: >
@@ -251,9 +235,7 @@ Parameters:
       Top-level key prefix inside ArtifactBucket for this framework's artifacts.
     Default: "terraform-artifacts"
 
-  # ----------------------------------------------------------------------------
   # Build Configuration
-  # ----------------------------------------------------------------------------
   BuildImage:
     Type: String
     Description: CodeBuild build environment image URI.
@@ -269,9 +251,7 @@ Parameters:
       - BUILD_GENERAL1_2XLARGE
     Default: BUILD_GENERAL1_SMALL
 
-  # ----------------------------------------------------------------------------
   # Notifications and Logging
-  # ----------------------------------------------------------------------------
   NotificationEmail:
     Type: String
     Description: >
@@ -299,9 +279,7 @@ Parameters:
     AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
     Default: 90
 
-  # ----------------------------------------------------------------------------
   # Tagging
-  # ----------------------------------------------------------------------------
   CostCenter:
     Type: String
     Description: Cost center code for billing allocation.
@@ -317,9 +295,7 @@ Parameters:
     Description: Team name for resource tagging.
     Default: "infrastructure"
 
-# ==============================================================================
 # CONDITIONS
-# ==============================================================================
 Conditions:
 
   CreateApprovalStage: !Equals [!Ref EnableApproval, "true"]
@@ -334,14 +310,10 @@ Conditions:
   IsGithub: !Equals [!Ref RepositoryProvider, "github"]
   IsCodeCommit: !Equals [!Ref RepositoryProvider, "codecommit"]
 
-# ==============================================================================
 # RESOURCES
-# ==============================================================================
 Resources:
 
-  # ============================================================================
   # IAM ROLES (created by template when CreateIamRoles=true)
-  # ============================================================================
   PipelineRole:
     Type: AWS::IAM::Role
     Condition: CreateIamRoles
@@ -547,9 +519,7 @@ Resources:
               - ssm:GetParameters
             Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/*"
 
-  # ============================================================================
   # CLOUDWATCH LOG GROUPS
-  # ============================================================================
   PlanBuildLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: EnableCloudWatch
@@ -592,9 +562,7 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # ============================================================================
   # SNS TOPIC - Notifications
-  # ============================================================================
   PipelineNotificationTopic:
     Type: AWS::SNS::Topic
     Condition: EnableEmailNotifications
@@ -638,10 +606,8 @@ Resources:
               ArnLike:
                 aws:SourceArn: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}-${Environment}-*"
 
-  # ============================================================================
   # EVENTBRIDGE - Default-bus trigger rules
   # One fires CodePipeline (approval mode), the other fires CodeBuild (auto mode)
-  # ============================================================================
   PipelineTriggerRule:
     Type: AWS::Events::Rule
     Condition: CreateApprovalStage
@@ -715,11 +681,9 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # ============================================================================
   # CODEBUILD - Plan project (approval mode)
   # CODEPIPELINE source; buildspec lives in the repo (buildspec-plan.yml).
   # Runs init/validate/plan and uploads the plan binary to S3 for Apply.
-  # ============================================================================
   TerraformPlanProject:
     Type: AWS::CodeBuild::Project
     Condition: CreateApprovalStage
@@ -809,11 +773,9 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # ============================================================================
   # CODEBUILD - Apply project (approval mode)
   # CODEPIPELINE source; buildspec lives in the repo (buildspec-apply.yml).
   # Downloads the EXACT plan binary from S3 by commit and applies it. No re-plan.
-  # ============================================================================
   TerraformApplyProject:
     Type: AWS::CodeBuild::Project
     Condition: CreateApprovalStage
@@ -903,11 +865,9 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # ============================================================================
   # CODEBUILD - Auto project (non-approval mode)
   # NO_SOURCE; clones the repo in the inline buildspec; plans; guards against
   # destroy/replace; auto-applies.
-  # ============================================================================
   TerraformAutoProject:
     Type: AWS::CodeBuild::Project
     Condition: AutoDeployMode
@@ -1097,10 +1057,8 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # ============================================================================
   # CODEPIPELINE - Approval mode only
   # Stages: Source -> Plan -> Approve -> Apply. Plan binary shared via S3.
-  # ============================================================================
   TerraformPipeline:
     Type: AWS::CodePipeline::Pipeline
     Condition: CreateApprovalStage
@@ -1202,9 +1160,7 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # ============================================================================
   # EVENTBRIDGE - Pipeline failure notifications (approval mode)
-  # ============================================================================
   PipelineFailureNotificationRule:
     Type: AWS::Events::Rule
     Condition: EnableEmailNotifications
@@ -1232,9 +1188,7 @@ Resources:
               time:        "$.time"
             InputTemplate: "\"PIPELINE ALERT | State: <state> | Pipeline: <pipeline> | Execution: <executionId> | Time: <time>\""
 
-# ==============================================================================
 # OUTPUTS
-# ==============================================================================
 Outputs:
 
   DeploymentMode:
