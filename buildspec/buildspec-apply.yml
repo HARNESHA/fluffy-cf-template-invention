@@ -1,32 +1,3 @@
-# =============================================================================
-# buildspec-apply.yml
-# Terraform Apply Buildspec (approval/pipeline path)
-# Used by: TerraformApplyProject (CODEPIPELINE source)
-#
-# IMPORTANT: This buildspec downloads the EXACT plan binary that the Plan
-# stage uploaded to S3 (keyed by commit) and applies it. It does NOT re-plan.
-# This guarantees that exactly what was reviewed and approved is what gets
-# applied.
-#
-# Stages:
-#   install   - Install Terraform at pinned version
-#   pre_build - Assume execution role (if configured), download plan binary
-#   build     - terraform init → apply (saved plan)
-#   post_build - Upload apply log to S3, publish SNS result notification
-#
-# S3 key scheme (must match the Plan buildspec):
-#   {ARTIFACT_PREFIX}/{REPOSITORY_NAME}/{ENVIRONMENT}/{BRANCH_NAME}/plans/{COMMIT_ID}/
-#     tfplan.binary
-#     plan.txt
-#   {ARTIFACT_PREFIX}/{REPOSITORY_NAME}/{ENVIRONMENT}/{BRANCH_NAME}/logs/{CODEBUILD_BUILD_ID}/
-#     apply.txt
-#
-# Environment Variables (injected by the CodeBuild project):
-#   TF_VERSION, TF_DIR, TF_BACKEND_BUCKET, TF_BACKEND_KEY, TF_BACKEND_REGION,
-#   PROJECT_NAME, ENVIRONMENT, REPOSITORY_NAME, BRANCH_NAME, COMMIT_ID,
-#   ARTIFACT_BUCKET, ARTIFACT_PREFIX, SNS_TOPIC_ARN, TF_EXECUTION_ROLE_ARN
-# =============================================================================
-
 version: 0.2
 
 env:

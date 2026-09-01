@@ -2,13 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   terraform-pipeline-framework.yaml | Version: 5.0.0
   Reusable single-account Terraform CI/CD framework.
-  One template decides between two modes via EnableApproval:
-    - EnableApproval=true  -> CodePipeline (Source -> Plan -> Approve -> Apply)
-    - EnableApproval=false -> single CodeBuild project (clone -> plan -> guarded apply)
-  Optionally creates the IAM roles in the template (CreateIamRoles + RolePath).
-  All plan binaries / logs / build caches are stored in ONE shared S3 bucket
-  (ArtifactBucket) under a per-repo, per-env, per-branch, per-commit path.
-
+  
 # METADATA
 Metadata:
   AWS::CloudFormation::Interface:
@@ -327,6 +321,11 @@ Resources:
             Effect: Allow
             Principal:
               Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+          - Sid: AllowEventBridgeInvocation
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
             Action: sts:AssumeRole
       Tags:
         - Key: ManagedBy

@@ -195,7 +195,7 @@ Deploy another stack with a different `Environment` (and a distinct `BackendKey`
 
 | Issue | Check |
 |---|---|
-| Pipeline/Build not triggering | Confirm the EventBridge rule is enabled (`aws events describe-rule`). Only pushes to `BranchName` on the default bus trigger it |
+| Pipeline/Build not triggering | Confirm the EventBridge rule is enabled (`aws events describe-rule`). Only pushes to `BranchName` on the default bus trigger it. The target role's trust policy must allow `events.amazonaws.com` to assume it (the template's `PipelineRole` includes this; if you pass your own `PipelineRoleArn`, add it manually) |
 | Source fails (approval mode, CodeCommit) | Confirm the pipeline role has `codecommit:*` on the repo ARN; a repo policy is NOT needed same-account |
 | Auto mode cannot clone (CodeCommit) | Confirm the CodeBuild role has `codecommit:GitPull` (template grants it when `RepositoryProvider=codecommit`) |
 | Auto mode cannot clone (GitHub) | Confirm `CodeStarConnectionArn` is set and the connection is **available**; the CodeBuild role has `codestar-connections:UseConnection` |
