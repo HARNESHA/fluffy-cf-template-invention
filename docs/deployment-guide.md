@@ -168,6 +168,30 @@ For `EnableApproval=true`, when the pipeline reaches the **Approve** stage:
 
 ## Day-2 Operations
 
+### Verifying remote state in S3
+
+State is written to S3 only when the **Apply** stage succeeds. The object lives
+at `BackendKey` in `BackendBucket` (us-east-1) — both come from your parameter
+file. After a successful apply, confirm:
+
+```bash
+aws s3 ls s3://826136930409-terraform-state-prod-1788254151/envs/dev/
+aws s3api get-object --bucket 826136930409-terraform-state-prod-1788254151 \
+  --key envs/dev/terraform.tfstate /tmp/terraform.tfstate
+grep '"serial"' /tmp/terraform.tfstate || true
+```
+
+Sanity rules to keep state location predictable:
+
+- `BackendKey` (parameter) and `envs/<env>.tfbackend#key` must match — the
+  CodeBuild `-backend-config` flags override the file, so a mismatch means the
+  stack wins and the file is only a fallback.
+- `BackendBucket` (parameter) and `envs/<env>.tfbackend#bucket` must match.
+- Always deploy the stack and the repo files from the **same** parameter set for
+  an environment (e.g. `pipeline-dev.json` ⇒ `envs/dev.tfbackend`, `envs/dev.tfvars`).
+- A plan-only run reads state but does not persist it; recreated demo resources on
+  every run is a sign Apply never completed, not a framework fault.
+
 ### Updating Terraform version
 
 Update `TerraformVersion` in the parameter file and redeploy:

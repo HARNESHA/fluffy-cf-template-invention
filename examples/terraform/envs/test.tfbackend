@@ -1,4 +1,4 @@
-bucket   = "826136930409-terraform-state-prod"
+bucket   = "my-org-terraform-state-test"
 key      = "envs/test/terraform.tfstate"
 region   = "us-east-1"
 encrypt  = true

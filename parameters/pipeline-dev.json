@@ -45,7 +45,7 @@
   },
   {
     "ParameterKey": "BackendKey",
-    "ParameterValue": "envs/test/terraform.tfstate"
+    "ParameterValue": "envs/dev/terraform.tfstate"
   },
   {
     "ParameterKey": "BackendRegion",
