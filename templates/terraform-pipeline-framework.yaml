@@ -724,8 +724,7 @@ Resources:
       Artifacts:
         Type: CODEPIPELINE
       Cache:
-        Type: S3
-        Location: !Sub "${ArtifactBucket}/build-cache/${ProjectName}-${Environment}-plan"
+        Type: NO_CACHE
       Environment:
         Type: LINUX_CONTAINER
         Image: !Ref BuildImage
@@ -816,8 +815,7 @@ Resources:
       Artifacts:
         Type: CODEPIPELINE
       Cache:
-        Type: S3
-        Location: !Sub "${ArtifactBucket}/build-cache/${ProjectName}-${Environment}-apply"
+        Type: NO_CACHE
       Environment:
         Type: LINUX_CONTAINER
         Image: !Ref BuildImage
@@ -908,8 +906,7 @@ Resources:
       Artifacts:
         Type: NO_ARTIFACTS
       Cache:
-        Type: S3
-        Location: !Sub "${ArtifactBucket}/build-cache/${ProjectName}-${Environment}-auto"
+        Type: NO_CACHE
       Environment:
         Type: LINUX_CONTAINER
         Image: !Ref BuildImage
