@@ -57,7 +57,6 @@ phases:
       - 'echo "Commit       : ${RESOLVED_COMMIT_ID}"'
       - 'echo "TF Directory : ${TF_DIR}"'
       - 'echo "Pipeline     : ${PIPELINE_NAME}"'
-      - 'echo "Execution ID : ${PIPELINE_EXECUTION_ID}"'
       - 'echo "Plan Key     : s3://${ARTIFACT_BUCKET}/${PLAN_ARTIFACT_KEY}/tfplan.binary"'
       # Keep the S3 backend on the CodeBuild role (repo account). The AWS
       # provider assumes the execution role for resource CRUD only.
@@ -65,7 +64,7 @@ phases:
         if [ "${TF_EXECUTION_ROLE_ARN}" != "NONE" ] && [ -n "${TF_EXECUTION_ROLE_ARN}" ]; then
           echo "AWS provider will assume execution role: ${TF_EXECUTION_ROLE_ARN}"
           export TF_VAR_tf_execution_role_arn="${TF_EXECUTION_ROLE_ARN}"
-          export TF_VAR_tf_role_session_name="TerraformPlan-${PROJECT_NAME}-${PIPELINE_EXECUTION_ID}"
+          export TF_VAR_tf_role_session_name="${PROJECT_NAME}-${ENVIRONMENT}"
         else
           export TF_VAR_tf_execution_role_arn=""
           echo "No execution role configured - using CodeBuild instance role"
@@ -153,7 +152,7 @@ phases:
       # Publish SNS notification with plan details + approval link (single email)
       - |
         if [ "${SNS_TOPIC_ARN}" != "DISABLED" ] && [ -n "${SNS_TOPIC_ARN}" ] && [ "${BUILD_STATUS}" = "1" ]; then
-          APPROVAL_URL="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${PIPELINE_NAME}/view?executionId=${PIPELINE_EXECUTION_ID}"
+          APPROVAL_URL="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${PIPELINE_NAME}/view"
           MESSAGE=$(printf '%s\n' \
             "TERRAFORM PLAN READY FOR REVIEW" \
             "=========================================" \
