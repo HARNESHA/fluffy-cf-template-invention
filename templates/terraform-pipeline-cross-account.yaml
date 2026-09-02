@@ -1,0 +1,1226 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  terraform-pipeline-cross-account.yaml | Version: 1.0.0
+  Terraform CI/CD framework supporting a CodeCommit source in another AWS
+  account and/or region (with assume-role + shared KMS + S3 bucket policy),
+  plus a simple same-account cross-region mode. Orchestration (pipeline,
+  CodeBuild, S3, SNS) always lives in the pipeline account where this template
+  is deployed.
+
+# METADATA
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "1. Project Identity"
+        Parameters: [ProjectName, Environment]
+      - Label:
+          default: "2. Source Repository (CodeCommit)"
+        Parameters: [RepositoryName, RepositoryAccountId, RepositoryRegion, BranchName]
+      - Label:
+          default: "3. Cross-Account Source"
+        Parameters: [SourceRoleArn, EncryptionKeyId, GrantBucketToRepoAccount]
+      - Label:
+          default: "4. Terraform Configuration"
+        Parameters: [TerraformDirectory, TerraformVersion, TfVarsFile]
+      - Label:
+          default: "5. Deployment Mode"
+        Parameters: [EnableApproval]
+      - Label:
+          default: "6. IAM Roles"
+        Parameters: [CreateIamRoles, RolePath, PipelineRoleArn, CodeBuildRoleArn, ExecutionRoleArn]
+      - Label:
+          default: "7. Shared S3 Bucket"
+        Parameters: [BucketName]
+      - Label:
+          default: "8. Build Configuration"
+        Parameters: [BuildImage, BuildComputeType]
+      - Label:
+          default: "9. Notifications and Logging"
+        Parameters: [NotificationEmail, EnableEmailNotifications, CreateCloudWatchLogs, LogRetentionDays]
+      - Label:
+          default: "10. Tagging"
+        Parameters: [CostCenter, Owner, TeamName]
+    ParameterLabels:
+      ProjectName:            { default: "Project Name" }
+      Environment:            { default: "Environment" }
+      RepositoryName:         { default: "CodeCommit Repository Name" }
+      RepositoryAccountId:    { default: "Repository Owner Account ID" }
+      RepositoryRegion:       { default: "Repository AWS Region" }
+      BranchName:             { default: "Branch to Monitor" }
+      SourceRoleArn:          { default: "Cross-Account Source Role ARN (empty for same-account)" }
+      EncryptionKeyId:        { default: "Customer-Managed KMS Key ARN (empty for default key)" }
+      GrantBucketToRepoAccount: { default: "Grant Artifact Bucket to Repo Account (true/false)" }
+      TerraformDirectory:     { default: "Terraform Root Directory (relative)" }
+      TerraformVersion:       { default: "Terraform Version" }
+      TfVarsFile:             { default: "Terraform tfvars File (relative, optional)" }
+      BucketName:             { default: "Shared S3 Bucket (pipeline artifacts, terraform artifacts, state)" }
+      EnableApproval:         { default: "Manual Approval Gate (true/false)" }
+      CreateIamRoles:         { default: "Create IAM Roles in Template (true/false)" }
+      RolePath:               { default: "IAM Role Path" }
+      PipelineRoleArn:        { default: "Pre-existing Pipeline Role ARN (when CreateIamRoles=false)" }
+      CodeBuildRoleArn:       { default: "Pre-existing CodeBuild Role ARN (when CreateIamRoles=false)" }
+      ExecutionRoleArn:       { default: "Terraform Execution Role ARN (optional)" }
+      BuildImage:             { default: "CodeBuild Build Image URI" }
+      BuildComputeType:       { default: "CodeBuild Compute Type" }
+      NotificationEmail:      { default: "Notification Email Address" }
+      EnableEmailNotifications: { default: "Enable Email Notifications via SNS" }
+      CreateCloudWatchLogs:   { default: "Create CloudWatch Log Groups" }
+      LogRetentionDays:       { default: "Log Retention Period (Days)" }
+      CostCenter:             { default: "Cost Center Tag" }
+      Owner:                  { default: "Owner Tag" }
+      TeamName:               { default: "Team Name Tag" }
+
+# PARAMETERS
+Parameters:
+
+  # Project Identity
+  ProjectName:
+    Type: String
+    Description: >
+      Short lowercase identifier for the project.
+      Used as prefix on all resource names.
+      Example: org-infra
+    AllowedPattern: "^[a-z0-9][a-z0-9\\-]{1,28}[a-z0-9]$"
+    ConstraintDescription: >
+      3-30 lowercase alphanumeric characters and hyphens.
+      Must start and end with an alphanumeric character.
+
+  Environment:
+    Type: String
+    Description: Deployment environment label used in resource naming and tagging.
+    AllowedValues: [dev, test, staging, prod, shared]
+    Default: dev
+
+  # Source Repository (CodeCommit)
+  RepositoryName:
+    Type: String
+    Description: >
+      Name of the CodeCommit repository to source from. The repository may live
+      in a different AWS account (RepositoryAccountId) and/or region
+      (RepositoryRegion) than this pipeline.
+    AllowedPattern: "^[a-zA-Z0-9._\\-]{1,200}$"
+    ConstraintDescription: Valid CodeCommit repository name.
+
+  RepositoryAccountId:
+    Type: String
+    Description: >
+      AWS account ID that OWNS the CodeCommit repository. For a same-account
+      cross-region setup use this pipeline's own account ID.
+    AllowedPattern: "^\\d{12}$"
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+
+  RepositoryRegion:
+    Type: String
+    Description: AWS Region where the CodeCommit repository lives.
+    Default: us-east-1
+
+  BranchName:
+    Type: String
+    Description: Git branch name to monitor and clone.
+    Default: main
+
+  # Cross-Account Source
+  SourceRoleArn:
+    Type: String
+    Description: >
+      ARN of the cross-account IAM role created in the repository account that
+      the pipeline Source action assumes to read the remote CodeCommit repo and
+      write its output artifact. Leave EMPTY for same-account mode (the pipeline
+      uses its own service role).
+    AllowedPattern: "^(arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512})?$"
+    Default: ""
+
+  EncryptionKeyId:
+    Type: String
+    Description: >
+      ARN or ID of a customer-managed AWS KMS key, in THIS pipeline account,
+      shared with the repository account so CodePipeline can encrypt/decrypt
+      cross-account artifacts. Leave EMPTY for same-account mode (default key).
+    Default: ""
+
+  GrantBucketToRepoAccount:
+    Type: String
+    Description: >
+      true  - add an S3 bucket policy granting the repository account access to
+              the artifact bucket (required for cross-account Source output).
+      false - no cross-account bucket policy (same-account mode).
+    AllowedValues: ["true", "false"]
+    Default: "false"
+
+  # Terraform Configuration
+  TerraformDirectory:
+    Type: String
+    Description: >
+      Relative path within the repo to the Terraform root module.
+      Use . for repository root.
+    Default: "."
+
+  TerraformVersion:
+    Type: String
+    Description: Terraform CLI version to install in CodeBuild.
+    Default: "1.10.5"
+    AllowedPattern: "^\\d+\\.\\d+\\.\\d+$"
+    ConstraintDescription: Must be a semantic version like 1.10.5
+
+  TfVarsFile:
+    Type: String
+    Description: >
+      Relative path to a .tfvars file (e.g. envs/dev.tfvars) inside the
+      TerraformDirectory. Passed to terraform plan/apply via -var-file.
+      Leave empty to run without a tfvars file.
+    Default: ""
+    AllowedPattern: ".*"
+
+  BucketName:
+    Type: String
+    Description: >
+      SINGLE shared S3 bucket for this project: CodePipeline artifacts,
+      Terraform plan binaries/logs (under ${ProjectName}/terraform-artifacts/...),
+      and remote state (under ${ProjectName}/state/${Environment}/terraform.tfstate).
+      Must exist with versioning + SSE-KMS enabled. See docs/artifact-bucket-guide.md.
+
+  # Deployment Mode
+  EnableApproval:
+    Type: String
+    Description: >
+      Controls deployment mode.
+        true  - CodePipeline with a Source stage, Plan -> Approve -> Apply (gated)
+        false - single CodeBuild project that clones, plans, guards and auto-applies
+    AllowedValues: ["true", "false"]
+    Default: "false"
+
+  # IAM Roles
+  CreateIamRoles:
+    Type: String
+    Description: >
+      true  - create the Pipeline and CodeBuild IAM roles in this template,
+              scoped to RolePath.
+      false - use the pre-existing PipelineRoleArn / CodeBuildRoleArn.
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  RolePath:
+    Type: String
+    Description: >
+      IAM role path (e.g. /, /application_role/, /teams/sre/). Used only when
+      CreateIamRoles=true so each team can create roles in its allowed path.
+      Resulting role ARNs include the path.
+    Default: "/"
+    AllowedPattern: "^\\/?([a-zA-Z0-9._=,@+\\-]+\\/)*$"
+    ConstraintDescription: >
+      Must be a valid IAM path: empty, /name/, or nested /a/b/.
+
+  PipelineRoleArn:
+    Type: String
+    Description: >
+      ARN of the pre-existing CodePipeline service role. Used only when
+      CreateIamRoles=false.
+    AllowedPattern: "^(arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512})?$"
+    Default: ""
+
+  CodeBuildRoleArn:
+    Type: String
+    Description: >
+      ARN of the pre-existing CodeBuild service role. Used only when
+      CreateIamRoles=false.
+    AllowedPattern: "^(arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512})?$"
+    Default: ""
+
+  # Execution Role
+  ExecutionRoleArn:
+    Type: String
+    Description: >
+      ARN of the Terraform Execution Role assumed by CodeBuild at runtime.
+      Leave blank to use the CodeBuild role's own permissions.
+    AllowedPattern: "^(arn:aws:iam::\\d{12}:role\\/[\\w+=,.@\\-\\/]{1,512})?$"
+    Default: ""
+
+  # Build Configuration
+  BuildImage:
+    Type: String
+    Description: CodeBuild build environment image URI.
+    Default: "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+
+  BuildComputeType:
+    Type: String
+    Description: CodeBuild compute instance type.
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+      - BUILD_GENERAL1_2XLARGE
+    Default: BUILD_GENERAL1_SMALL
+
+  # Notifications and Logging
+  NotificationEmail:
+    Type: String
+    Description: >
+      Email address for SNS notifications.
+      Required when EnableEmailNotifications is true.
+    Default: ""
+    AllowedPattern: "^(|[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,})$"
+    ConstraintDescription: Must be a valid email address or empty string.
+
+  EnableEmailNotifications:
+    Type: String
+    Description: Create SNS topic and email subscription.
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  CreateCloudWatchLogs:
+    Type: String
+    Description: Create CloudWatch Log Groups for CodeBuild projects.
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  LogRetentionDays:
+    Type: Number
+    Description: Number of days to retain CloudWatch Logs.
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+    Default: 90
+
+  # Tagging
+  CostCenter:
+    Type: String
+    Description: Cost center code for billing allocation.
+    Default: "unassigned"
+
+  Owner:
+    Type: String
+    Description: Team or individual responsible for this deployment.
+    Default: "platform-engineering"
+
+  TeamName:
+    Type: String
+    Description: Team name for resource tagging.
+    Default: "infrastructure"
+
+# CONDITIONS
+Conditions:
+
+  CreateApprovalStage: !Equals [!Ref EnableApproval, "true"]
+  AutoDeployMode:      !Equals [!Ref EnableApproval, "false"]
+  CreateIamRoles:      !Equals [!Ref CreateIamRoles, "true"]
+
+  EnableEmailNotifications: !Equals [!Ref EnableEmailNotifications, "true"]
+  EnableCloudWatch:         !Equals [!Ref CreateCloudWatchLogs, "true"]
+
+  HasExecutionRole: !Not [!Equals [!Ref ExecutionRoleArn, ""]]
+
+  IsCrossAccount:    !Not [!Equals [!Ref SourceRoleArn, ""]]
+  HasEncryptionKey:  !Not [!Equals [!Ref EncryptionKeyId, ""]]
+  GrantBucketToRepo: !Equals [!Ref GrantBucketToRepoAccount, "true"]
+
+# RESOURCES
+Resources:
+
+  # IAM ROLES (created by template when CreateIamRoles=true)
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Condition: CreateIamRoles
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-pipeline-role"
+      Path: !Ref RolePath
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCodePipelineService
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Team
+          Value: !Ref TeamName
+
+  PipelineRolePolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateIamRoles
+    Properties:
+      PolicyName: !Sub "${ProjectName}-${Environment}-pipeline-policy"
+      Roles:
+        - !Ref PipelineRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: S3ArtifactAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketLocation
+              - s3:PutObject
+              - s3:GetBucketVersioning
+              - s3:ListBucket
+              - s3:DeleteObject
+            Resource:
+              - !Sub "arn:aws:s3:::${BucketName}"
+              - !Sub "arn:aws:s3:::${BucketName}/*"
+          - Sid: CodeCommitSource
+            Effect: Allow
+            Action:
+              - codecommit:GetBranch
+              - codecommit:GetCommit
+              - codecommit:GetRepository
+              - codecommit:GetUploadArchiveStatus
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codecommit:GitPull
+              - codecommit:ListBranches
+            Resource: !Sub "arn:aws:codecommit:${RepositoryRegion}:${RepositoryAccountId}:${RepositoryName}"
+          - Fn::If:
+              - IsCrossAccount
+              - Sid: AssumeCrossAccountSourceRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref SourceRoleArn
+              - !Ref AWS::NoValue
+          - Sid: CodePipelineStartExecution
+            Effect: Allow
+            Action: codepipeline:StartPipelineExecution
+            Resource: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-*"
+          - Sid: CodeBuildAccess
+            Effect: Allow
+            Action:
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - codebuild:StopBuild
+            Resource: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}-${Environment}-*"
+          - Fn::If:
+              - EnableEmailNotifications
+              - Sid: SNSAccess
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref PipelineNotificationTopic
+              - !Ref AWS::NoValue
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codepipeline/${ProjectName}-${Environment}-*:*"
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Condition: CreateIamRoles
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-codebuild-role"
+      Path: !Ref RolePath
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCodeBuildService
+            Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Team
+          Value: !Ref TeamName
+
+  CodeBuildRolePolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateIamRoles
+    Properties:
+      PolicyName: !Sub "${ProjectName}-${Environment}-codebuild-policy"
+      Roles:
+        - !Ref CodeBuildRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: S3ArtifactAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:GetBucketVersioning
+              - s3:ListBucket
+              - s3:DeleteObject
+            Resource:
+              - !Sub "arn:aws:s3:::${BucketName}"
+              - !Sub "arn:aws:s3:::${BucketName}/*"
+          - Sid: S3TerraformStateAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${BucketName}"
+              - !Sub "arn:aws:s3:::${BucketName}/*"
+          - Sid: CodeCommitGitPull
+            Effect: Allow
+            Action:
+              - codecommit:GetBranch
+              - codecommit:GetCommit
+              - codecommit:GetRepository
+              - codecommit:GitPull
+              - codecommit:GetFile
+              - codecommit:GetFolder
+              - codecommit:GetTree
+              - codecommit:ListBranches
+            Resource: !Sub "arn:aws:codecommit:${RepositoryRegion}:${RepositoryAccountId}:${RepositoryName}"
+          - Fn::If:
+              - IsCrossAccount
+              - Sid: AssumeCrossAccountSourceRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref SourceRoleArn
+              - !Ref AWS::NoValue
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/codebuild/${ProjectName}-${Environment}-*:*"
+          - Fn::If:
+              - HasExecutionRole
+              - Sid: STSAssumeExecutionRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref ExecutionRoleArn
+              - !Ref AWS::NoValue
+          - Fn::If:
+              - EnableEmailNotifications
+              - Sid: SNSAccess
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref PipelineNotificationTopic
+              - !Ref AWS::NoValue
+          - Sid: SSMParameterRead
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/*"
+
+  # CLOUDWATCH LOG GROUPS
+  PlanBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableCloudWatch
+    Properties:
+      LogGroupName: !Sub "/codebuild/${ProjectName}-${Environment}-tf-plan"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  ApplyBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableCloudWatch
+    Properties:
+      LogGroupName: !Sub "/codebuild/${ProjectName}-${Environment}-tf-apply"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AutoBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableCloudWatch
+    Properties:
+      LogGroupName: !Sub "/codebuild/${ProjectName}-${Environment}-tf-auto"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # SNS TOPIC - Notifications
+  PipelineNotificationTopic:
+    Type: AWS::SNS::Topic
+    Condition: EnableEmailNotifications
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-tf-notifications"
+      DisplayName: !Sub "Terraform: ${ProjectName} (${Environment})"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-tf-notifications"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  PipelineNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: EnableEmailNotifications
+    Properties:
+      TopicArn: !Ref PipelineNotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  PipelineNotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: EnableEmailNotifications
+    Properties:
+      Topics:
+        - !Ref PipelineNotificationTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCodeBuildPublish
+            Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref PipelineNotificationTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ProjectName}-${Environment}-*"
+
+  # CODEBUILD - Plan project (approval mode)
+  # CODEPIPELINE source; buildspec lives in the repo (buildspec-plan.yml).
+  # Runs init/validate/plan and uploads the plan binary to S3 for Apply.
+  TerraformPlanProject:
+    Type: AWS::CodeBuild::Project
+    Condition: CreateApprovalStage
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-tf-plan"
+      Description: !Sub >-
+        Terraform Plan for ${ProjectName}/${Environment}. Runs init/validate/plan
+        and uploads the plan binary to S3 for the Apply stage.
+      ServiceRole: !If [CreateIamRoles, !GetAtt CodeBuildRole.Arn, !Ref CodeBuildRoleArn]
+      TimeoutInMinutes: 60
+      QueuedTimeoutInMinutes: 480
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: NO_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: !Ref BuildImage
+        ComputeType: !Ref BuildComputeType
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: TF_VERSION
+            Value: !Ref TerraformVersion
+            Type: PLAINTEXT
+          - Name: TF_DIR
+            Value: !Ref TerraformDirectory
+            Type: PLAINTEXT
+          - Name: TF_VARS_FILE
+            Value: !Ref TfVarsFile
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_BUCKET
+            Value: !Ref BucketName
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_KEY
+            Value: !Sub "${ProjectName}/state/${Environment}/terraform.tfstate"
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_REGION
+            Value: !Ref AWS::Region
+            Type: PLAINTEXT
+          - Name: PROJECT_NAME
+            Value: !Ref ProjectName
+            Type: PLAINTEXT
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+            Type: PLAINTEXT
+          - Name: REPOSITORY_NAME
+            Value: !Ref RepositoryName
+            Type: PLAINTEXT
+          - Name: BRANCH_NAME
+            Value: !Ref BranchName
+            Type: PLAINTEXT
+          - Name: COMMIT_ID
+            Value: "#{SourceVariables.CommitId}"
+            Type: PLAINTEXT
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref BucketName
+            Type: PLAINTEXT
+          - Name: ARTIFACT_PREFIX
+            Value: !Sub "${ProjectName}/terraform-artifacts"
+            Type: PLAINTEXT
+          - Name: SNS_TOPIC_ARN
+            Value: !If [EnableEmailNotifications, !Ref PipelineNotificationTopic, "DISABLED"]
+            Type: PLAINTEXT
+          - Name: TF_EXECUTION_ROLE_ARN
+            Value: !If [HasExecutionRole, !Ref ExecutionRoleArn, "NONE"]
+            Type: PLAINTEXT
+          - Name: PIPELINE_NAME
+            Value: !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+            Type: PLAINTEXT
+      Source:
+        BuildSpec: buildspec-plan.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: !If [EnableCloudWatch, "ENABLED", "DISABLED"]
+          GroupName: !If [EnableCloudWatch, !Ref PlanBuildLogGroup, !Ref AWS::NoValue]
+          StreamName: !If [EnableCloudWatch, "plan-build", !Ref AWS::NoValue]
+        S3Logs:
+          Status: DISABLED
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-tf-plan"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # CODEBUILD - Apply project (approval mode)
+  # CODEPIPELINE source; buildspec lives in the repo (buildspec-apply.yml).
+  # Downloads the EXACT plan binary from S3 by commit and applies it. No re-plan.
+  TerraformApplyProject:
+    Type: AWS::CodeBuild::Project
+    Condition: CreateApprovalStage
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-tf-apply"
+      Description: !Sub >-
+        Terraform Apply for ${ProjectName}/${Environment}. Consumes the plan
+        binary uploaded by the Plan stage. No re-plan occurs.
+      ServiceRole: !If [CreateIamRoles, !GetAtt CodeBuildRole.Arn, !Ref CodeBuildRoleArn]
+      TimeoutInMinutes: 120
+      QueuedTimeoutInMinutes: 480
+      Artifacts:
+        Type: CODEPIPELINE
+      Cache:
+        Type: NO_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: !Ref BuildImage
+        ComputeType: !Ref BuildComputeType
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: TF_VERSION
+            Value: !Ref TerraformVersion
+            Type: PLAINTEXT
+          - Name: TF_DIR
+            Value: !Ref TerraformDirectory
+            Type: PLAINTEXT
+          - Name: TF_VARS_FILE
+            Value: !Ref TfVarsFile
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_BUCKET
+            Value: !Ref BucketName
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_KEY
+            Value: !Sub "${ProjectName}/state/${Environment}/terraform.tfstate"
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_REGION
+            Value: !Ref AWS::Region
+            Type: PLAINTEXT
+          - Name: PROJECT_NAME
+            Value: !Ref ProjectName
+            Type: PLAINTEXT
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+            Type: PLAINTEXT
+          - Name: REPOSITORY_NAME
+            Value: !Ref RepositoryName
+            Type: PLAINTEXT
+          - Name: BRANCH_NAME
+            Value: !Ref BranchName
+            Type: PLAINTEXT
+          - Name: COMMIT_ID
+            Value: "#{SourceVariables.CommitId}"
+            Type: PLAINTEXT
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref BucketName
+            Type: PLAINTEXT
+          - Name: ARTIFACT_PREFIX
+            Value: !Sub "${ProjectName}/terraform-artifacts"
+            Type: PLAINTEXT
+          - Name: SNS_TOPIC_ARN
+            Value: !If [EnableEmailNotifications, !Ref PipelineNotificationTopic, "DISABLED"]
+            Type: PLAINTEXT
+          - Name: TF_EXECUTION_ROLE_ARN
+            Value: !If [HasExecutionRole, !Ref ExecutionRoleArn, "NONE"]
+            Type: PLAINTEXT
+          - Name: PIPELINE_NAME
+            Value: !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+            Type: PLAINTEXT
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-apply.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: !If [EnableCloudWatch, "ENABLED", "DISABLED"]
+          GroupName: !If [EnableCloudWatch, !Ref ApplyBuildLogGroup, !Ref AWS::NoValue]
+          StreamName: !If [EnableCloudWatch, "apply-build", !Ref AWS::NoValue]
+        S3Logs:
+          Status: DISABLED
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-tf-apply"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # CODEBUILD - Auto project (non-approval mode)
+  # NO_SOURCE; clones the repo in the inline buildspec; plans; guards against
+  # destroy/replace; auto-applies.
+  TerraformAutoProject:
+    Type: AWS::CodeBuild::Project
+    Condition: AutoDeployMode
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-tf-auto"
+      Description: !Sub >-
+        Terraform Auto-Deploy for ${ProjectName}/${Environment}. Clones, plans,
+        blocks destructive changes, and auto-applies. No manual approval.
+      ServiceRole: !If [CreateIamRoles, !GetAtt CodeBuildRole.Arn, !Ref CodeBuildRoleArn]
+      TimeoutInMinutes: 120
+      QueuedTimeoutInMinutes: 480
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Cache:
+        Type: NO_CACHE
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: !Ref BuildImage
+        ComputeType: !Ref BuildComputeType
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: TF_VERSION
+            Value: !Ref TerraformVersion
+            Type: PLAINTEXT
+          - Name: TF_DIR
+            Value: !Ref TerraformDirectory
+            Type: PLAINTEXT
+          - Name: TF_VARS_FILE
+            Value: !Ref TfVarsFile
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_BUCKET
+            Value: !Ref BucketName
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_KEY
+            Value: !Sub "${ProjectName}/state/${Environment}/terraform.tfstate"
+            Type: PLAINTEXT
+          - Name: TF_BACKEND_REGION
+            Value: !Ref AWS::Region
+            Type: PLAINTEXT
+          - Name: PROJECT_NAME
+            Value: !Ref ProjectName
+            Type: PLAINTEXT
+          - Name: ENVIRONMENT
+            Value: !Ref Environment
+            Type: PLAINTEXT
+          - Name: REPOSITORY_NAME
+            Value: !Ref RepositoryName
+            Type: PLAINTEXT
+          - Name: REPOSITORY_REGION
+            Value: !Ref RepositoryRegion
+            Type: PLAINTEXT
+          - Name: REPOSITORY_ACCOUNT_ID
+            Value: !Ref RepositoryAccountId
+            Type: PLAINTEXT
+          - Name: SOURCE_ROLE_ARN
+            Value: !If [IsCrossAccount, !Ref SourceRoleArn, "NONE"]
+            Type: PLAINTEXT
+          - Name: BRANCH_NAME
+            Value: !Ref BranchName
+            Type: PLAINTEXT
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref BucketName
+            Type: PLAINTEXT
+          - Name: ARTIFACT_PREFIX
+            Value: !Sub "${ProjectName}/terraform-artifacts"
+            Type: PLAINTEXT
+          - Name: SNS_TOPIC_ARN
+            Value: !If [EnableEmailNotifications, !Ref PipelineNotificationTopic, "DISABLED"]
+            Type: PLAINTEXT
+          - Name: TF_EXECUTION_ROLE_ARN
+            Value: !If [HasExecutionRole, !Ref ExecutionRoleArn, "NONE"]
+            Type: PLAINTEXT
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            install:
+              runtime-versions:
+                python: 3.11
+              commands:
+                - |
+                  TF_ZIP="terraform_${TF_VERSION}_linux_amd64.zip"
+                  curl -sSfL "https://releases.hashicorp.com/terraform/${TF_VERSION}/${TF_ZIP}" -o "/tmp/${TF_ZIP}"
+                  curl -sSfL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_SHA256SUMS" -o /tmp/terraform_SHA256SUMS
+                  cd /tmp && grep "${TF_ZIP}" terraform_SHA256SUMS | sha256sum --check -
+                  unzip -q "/tmp/${TF_ZIP}" -d /tmp/terraform-bin
+                  mv /tmp/terraform-bin/terraform /usr/local/bin/terraform
+                  chmod +x /usr/local/bin/terraform
+                  terraform version
+            pre_build:
+              commands:
+                - |
+                  mkdir -p "${CODEBUILD_SRC_DIR}/work"
+                  # If a cross-account source role is configured, assume it so the
+                  # CodeCommit credential-helper can read the remote-region/account repo.
+                  if [ -n "${SOURCE_ROLE_ARN}" ] && [ "${SOURCE_ROLE_ARN}" != "NONE" ]; then
+                    CREDS=$(aws sts assume-role --role-arn "${SOURCE_ROLE_ARN}" \
+                      --role-session-name "AutoClone-${PROJECT_NAME}" --query "Credentials" --output json)
+                    export AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["AccessKeyId"])')
+                    export AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["SecretAccessKey"])')
+                    export AWS_SESSION_TOKEN=$(echo "${CREDS}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["SessionToken"])')
+                  fi
+                  git config --global credential.helper '!aws codecommit credential-helper $@'
+                  git config --global credential.UseHttpPath true
+                  REPO_URL="https://git-codecommit.${REPOSITORY_REGION}.amazonaws.com/v1/repos/${REPOSITORY_NAME}"
+                  echo "Cloning ${REPOSITORY_NAME} branch ${BRANCH_NAME}"
+                  git clone --branch "${BRANCH_NAME}" --single-branch "${REPO_URL}" "${CODEBUILD_SRC_DIR}/work/repo"
+                  cd "${CODEBUILD_SRC_DIR}/work/repo"
+                  export RESOLVED_COMMIT_ID=$(git rev-parse HEAD)
+                  export AWS_REGION="${AWS_DEFAULT_REGION:-${REPOSITORY_REGION}}"
+                - |
+                  if [ "${TF_EXECUTION_ROLE_ARN}" != "NONE" ] && [ -n "${TF_EXECUTION_ROLE_ARN}" ]; then
+                    echo "AWS provider will assume execution role: ${TF_EXECUTION_ROLE_ARN}"
+                    export TF_VAR_tf_execution_role_arn="${TF_EXECUTION_ROLE_ARN}"
+                    export TF_VAR_tf_role_session_name="${PROJECT_NAME}-${ENVIRONMENT}"
+                  else
+                    export TF_VAR_tf_execution_role_arn=""
+                    echo "No execution role configured - using CodeBuild instance role"
+                  fi
+            build:
+              commands:
+                - |
+                  cd "${CODEBUILD_SRC_DIR}/work/repo/${TF_DIR}"
+                  set -o pipefail
+                  terraform init \
+                    -backend-config="envs/${ENVIRONMENT}.tfbackend" \
+                    -backend-config="bucket=${TF_BACKEND_BUCKET}" \
+                    -backend-config="key=${TF_BACKEND_KEY}" \
+                    -backend-config="region=${TF_BACKEND_REGION}" \
+                    -backend-config="encrypt=true" \
+                    -input=false -no-color
+                  terraform validate -no-color
+                  if [ -n "${TF_VARS_FILE}" ] && [ "${TF_VARS_FILE}" != "undefined" ]; then
+                    TF_VARS_ARGS=(-var-file="${TF_VARS_FILE}")
+                  else
+                    TF_VARS_ARGS=()
+                  fi
+                  terraform plan -var="environment=${ENVIRONMENT}" \
+                    -out="${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
+                    -input=false -no-color "${TF_VARS_ARGS[@]}" 2>&1 | tee "${CODEBUILD_SRC_DIR}/work/plan.txt"
+                  echo "--- Guarding against destroy/replace ---"
+                  if grep -E "must be replaced|will be destroyed" "${CODEBUILD_SRC_DIR}/work/plan.txt" ; then
+                    echo "ERROR: Plan contains destroy/replace actions. Auto-apply blocked."
+                    echo "Set EnableApproval=true for this environment and review manually."
+                    exit 1
+                  fi
+                  echo "No destructive changes detected - applying."
+                  terraform apply -input=false -no-color \
+                    "${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
+                    2>&1 | tee "${CODEBUILD_SRC_DIR}/work/apply.txt"
+            post_build:
+              commands:
+                - |
+                  cd "${CODEBUILD_SRC_DIR}/work/repo"
+                  RESOLVED_COMMIT_ID=$(git rev-parse HEAD)
+                  PLAN_KEY="${ARTIFACT_PREFIX}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
+                  LOG_KEY="${ARTIFACT_PREFIX}/${ENVIRONMENT}/${BRANCH_NAME}/logs/${CODEBUILD_BUILD_ID}"
+                  aws s3 cp "${CODEBUILD_SRC_DIR}/work/tfplan.binary" "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}/tfplan.binary" --sse aws:kms --no-progress
+                  aws s3 cp "${CODEBUILD_SRC_DIR}/work/plan.txt" "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}/plan.txt" --sse aws:kms --no-progress
+                  if [ -f "${CODEBUILD_SRC_DIR}/work/apply.txt" ]; then
+                    aws s3 cp "${CODEBUILD_SRC_DIR}/work/apply.txt" "s3://${ARTIFACT_BUCKET}/${LOG_KEY}/apply.txt" --sse aws:kms --no-progress
+                  fi
+                  if [ "${SNS_TOPIC_ARN}" != "DISABLED" ] && [ -n "${SNS_TOPIC_ARN}" ]; then
+                    if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+                      RESULT="SUCCESS"; SUBJECT="AUTO-APPLY SUCCESS: ${PROJECT_NAME} (${ENVIRONMENT})"
+                    else
+                      RESULT="FAILED"; SUBJECT="AUTO-APPLY FAILED: ${PROJECT_NAME} (${ENVIRONMENT})"
+                    fi
+                    aws sns publish \
+                      --topic-arn "${SNS_TOPIC_ARN}" \
+                      --subject "${SUBJECT}" \
+                      --message "Terraform Auto-Apply ${RESULT}: repo=${REPOSITORY_NAME} branch=${BRANCH_NAME} commit=${RESOLVED_COMMIT_ID} plan=s3://${ARTIFACT_BUCKET}/${PLAN_KEY}/plan.txt log=s3://${ARTIFACT_BUCKET}/${LOG_KEY}/apply.txt"
+                  fi
+      LogsConfig:
+        CloudWatchLogs:
+          Status: !If [EnableCloudWatch, "ENABLED", "DISABLED"]
+          GroupName: !If [EnableCloudWatch, !Ref AutoBuildLogGroup, !Ref AWS::NoValue]
+          StreamName: !If [EnableCloudWatch, "auto-build", !Ref AWS::NoValue]
+        S3Logs:
+          Status: DISABLED
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-tf-auto"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ARTIFACT BUCKET POLICY - Grants the repository account write access to the
+  # pipeline account's artifact bucket so the cross-account CodeCommit source
+  # action can write its source output artifact. Only applied when
+  # GrantBucketToRepoAccount=true (private/bring-your-own buckets excluded).
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: GrantBucketToRepo
+    Properties:
+      Bucket: !Ref BucketName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CrossAccountPipelineSource
+            Effect: Allow
+            Principal:
+              AWS: !Ref SourceRoleArn
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketLocation
+              - s3:GetBucketVersioning
+              - s3:ListBucket
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub "arn:aws:s3:::${BucketName}"
+              - !Sub "arn:aws:s3:::${BucketName}/*"
+
+  # CODEPIPELINE - Approval mode only
+  # Stages: Source -> Plan -> Approve -> Apply. Plan binary shared via S3.
+  TerraformPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: CreateApprovalStage
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+      RoleArn: !If [CreateIamRoles, !GetAtt PipelineRole.Arn, !Ref PipelineRoleArn]
+      ArtifactStore:
+        Type: S3
+        Location: !Ref BucketName
+        EncryptionKey: !If
+          - HasEncryptionKey
+          - Id: !Ref EncryptionKeyId
+            Type: KMS
+          - !Ref AWS::NoValue
+      RestartExecutionOnUpdate: false
+      Stages:
+
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: "1"
+              Configuration: !If
+                - IsCrossAccount
+                - RepositoryName: !Ref RepositoryName
+                  BranchName: !Ref BranchName
+                  PollForSourceChanges: "false"
+                  roleArn: !Ref SourceRoleArn
+                  OutputArtifactFormat: CODE_ZIP
+                - RepositoryName: !Ref RepositoryName
+                  BranchName: !Ref BranchName
+                  PollForSourceChanges: "false"
+                  OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceOutput
+              Namespace: SourceVariables
+              RunOrder: 1
+
+        - Name: Plan
+          Actions:
+            - Name: TerraformPlan
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Sub "${ProjectName}-${Environment}-tf-plan"
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts: []
+              RunOrder: 1
+
+        - !If
+          - CreateApprovalStage
+          - Name: Approve
+            Actions:
+              - Name: ReviewTerraformPlan
+                ActionTypeId:
+                  Category: Approval
+                  Owner: AWS
+                  Provider: Manual
+                  Version: "1"
+                Configuration:
+                  CustomData: !Sub >-
+                    REVIEW REQUIRED | Project: ${ProjectName} | Env: ${Environment} |
+                    Repo: ${RepositoryName} | Branch: ${BranchName}
+                  ExternalEntityLink: !Sub >-
+                    https://${AWS::Region}.console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ProjectName}-${Environment}-tf-plan/history
+                RunOrder: 1
+          - !Ref AWS::NoValue
+
+        - Name: Apply
+          Actions:
+            - Name: TerraformApply
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Sub "${ProjectName}-${Environment}-tf-apply"
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts: []
+              RunOrder: 1
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Repository
+          Value: !Ref RepositoryName
+        - Key: Branch
+          Value: !Ref BranchName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # EVENTBRIDGE - Pipeline failure notifications (approval mode)
+  PipelineFailureNotificationRule:
+    Type: AWS::Events::Rule
+    Condition: EnableEmailNotifications
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-pipeline-failure-alert"
+      Description: !Sub "Publishes SNS alert when ${ProjectName} pipeline fails"
+      EventPattern:
+        source:
+          - "aws.codepipeline"
+        detail-type:
+          - "CodePipeline Pipeline Execution State Change"
+        detail:
+          state:
+            - "FAILED"
+            - "STOPPED"
+      State: ENABLED
+      Targets:
+        - Id: PipelineFailureSNS
+          Arn: !Ref PipelineNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              pipeline:    "$.detail.pipeline"
+              state:       "$.detail.state"
+              executionId: "$.detail.execution-id"
+              time:        "$.time"
+            InputTemplate: "\"PIPELINE ALERT | State: <state> | Pipeline: <pipeline> | Execution: <executionId> | Time: <time>\""
+
+# OUTPUTS
+Outputs:
+
+  DeploymentMode:
+    Description: Mode selected by EnableApproval (pipeline vs single-build)
+    Value: !If
+      - CreateApprovalStage
+      - pipeline
+      - single-build
+    Export:
+      Name: !Sub "${AWS::StackName}-DeploymentMode"
+
+  PipelineName:
+    Description: Name of the CodePipeline (only when EnableApproval=true)
+    Condition: CreateApprovalStage
+    Value: !Sub "${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineName"
+
+  PipelineArn:
+    Description: ARN of the CodePipeline (only when EnableApproval=true)
+    Condition: CreateApprovalStage
+    Value: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-${BranchName}-tf-pipeline"
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineArn"
+
+  PipelineUrl:
+    Description: Console URL for the CodePipeline (only when EnableApproval=true)
+    Condition: CreateApprovalStage
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${ProjectName}-${Environment}-${BranchName}-tf-pipeline/view"
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineUrl"
+
+  BuildProjectName:
+    Description: CodeBuild project name (auto-build when single-build mode, plan otherwise)
+    Value: !If
+      - AutoDeployMode
+      - !Sub "${ProjectName}-${Environment}-tf-auto"
+      - !Sub "${ProjectName}-${Environment}-tf-plan"
+    Export:
+      Name: !Sub "${AWS::StackName}-BuildProjectName"
+
+  CodeBuildRoleArn:
+    Description: ARN of the CodeBuild service role
+    Value: !If [CreateIamRoles, !GetAtt CodeBuildRole.Arn, !Ref CodeBuildRoleArn]
+    Export:
+      Name: !Sub "${AWS::StackName}-CodeBuildRoleArn"
+
+  PipelineRoleArn:
+    Description: ARN of the CodePipeline service role
+    Value: !If [CreateIamRoles, !GetAtt PipelineRole.Arn, !Ref PipelineRoleArn]
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineRoleArn"
+
+  BucketName:
+    Description: Shared S3 bucket (pipeline artifacts, terraform artifacts, state)
+    Value: !Ref BucketName
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketName"
+
+  SnsTopicArn:
+    Description: ARN of the SNS notification topic
+    Value: !If
+      - EnableEmailNotifications
+      - !Ref PipelineNotificationTopic
+      - "NOTIFICATIONS_DISABLED"
+    Export:
+      Name: !Sub "${AWS::StackName}-SnsTopicArn"
+
+  ProjectName:
+    Description: Project identifier
+    Value: !Ref ProjectName
+    Export:
+      Name: !Sub "${AWS::StackName}-ProjectName"
+
+  Environment:
+    Description: Environment label
+    Value: !Ref Environment
+    Export:
+      Name: !Sub "${AWS::StackName}-Environment"
