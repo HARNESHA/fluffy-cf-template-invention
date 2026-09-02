@@ -9,9 +9,9 @@ env:
 
 phases:
 
-  # ---------------------------------------------------------------------------
+
   # INSTALL - Download and install Terraform at the pinned version
-  # ---------------------------------------------------------------------------
+
   install:
     runtime-versions:
       python: 3.11
@@ -30,9 +30,9 @@ phases:
         terraform version
       - echo "=== [INSTALL] Terraform installation complete ==="
 
-  # ---------------------------------------------------------------------------
+
   # PRE_BUILD - Resolve commit, assume execution role, configure environment
-  # ---------------------------------------------------------------------------
+
   pre_build:
     commands:
       - echo "=== [PRE_BUILD] Configuring environment ==="
@@ -71,9 +71,9 @@ phases:
         fi
       - echo "=== [PRE_BUILD] Environment ready ==="
 
-  # ---------------------------------------------------------------------------
+
   # BUILD - Terraform init, validate, plan
-  # ---------------------------------------------------------------------------
+
   build:
     commands:
       - echo "=== [BUILD] Starting Terraform workflow ==="
@@ -127,9 +127,9 @@ phases:
 
       - echo "=== [BUILD] Terraform plan workflow complete ==="
 
-  # ---------------------------------------------------------------------------
+
   # POST_BUILD - Upload plan artifacts to S3, publish SNS notification
-  # ---------------------------------------------------------------------------
+
   post_build:
     commands:
       - echo "=== [POST_BUILD] Uploading artifacts ==="

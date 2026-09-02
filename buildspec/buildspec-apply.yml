@@ -8,9 +8,9 @@ env:
 
 phases:
 
-  # ---------------------------------------------------------------------------
+
   # INSTALL - Download and install Terraform at the pinned version
-  # ---------------------------------------------------------------------------
+
   install:
     runtime-versions:
       python: 3.11
@@ -29,9 +29,9 @@ phases:
         terraform version
       - echo "=== [INSTALL] Terraform installation complete ==="
 
-  # ---------------------------------------------------------------------------
+
   # PRE_BUILD - Resolve commit, assume execution role, download plan binary
-  # ---------------------------------------------------------------------------
+
   pre_build:
     commands:
       - echo "=== [PRE_BUILD] Configuring apply environment ==="
@@ -83,9 +83,9 @@ phases:
 
       - echo "=== [PRE_BUILD] Apply environment ready ==="
 
-  # ---------------------------------------------------------------------------
+
   # BUILD - Terraform init (providers only) → apply saved plan binary
-  # ---------------------------------------------------------------------------
+
   build:
     commands:
       - echo "=== [BUILD] Starting Terraform apply ==="
@@ -119,9 +119,9 @@ phases:
       - export APPLY_STATUS="SUCCESS"
       - echo "=== [BUILD] Terraform apply complete ==="
 
-  # ---------------------------------------------------------------------------
+
   # POST_BUILD - Upload apply log to S3, publish SNS result notification
-  # ---------------------------------------------------------------------------
+
   post_build:
     commands:
       - echo "=== [POST_BUILD] Publishing apply result ==="

@@ -35,9 +35,9 @@ env:
 
 phases:
 
-  # ---------------------------------------------------------------------------
+
   # INSTALL - Download and install Terraform at the pinned version
-  # ---------------------------------------------------------------------------
+
   install:
     runtime-versions:
       python: 3.11
@@ -52,9 +52,9 @@ phases:
         chmod +x /usr/local/bin/terraform
         terraform version
 
-  # ---------------------------------------------------------------------------
+
   # PRE_BUILD - Clone repo, assume execution role
-  # ---------------------------------------------------------------------------
+
   pre_build:
     commands:
       - |
@@ -84,9 +84,9 @@ phases:
             echo "No execution role configured - using CodeBuild instance role"
           fi
 
-  # ---------------------------------------------------------------------------
+
   # BUILD - init, validate, plan, guard against destroy/replace, auto-apply
-  # ---------------------------------------------------------------------------
+
   build:
     commands:
       - |
@@ -122,9 +122,9 @@ phases:
           "${CODEBUILD_SRC_DIR}/work/tfplan.binary" \
           2>&1 | tee "${CODEBUILD_SRC_DIR}/work/apply.txt"
 
-  # ---------------------------------------------------------------------------
+
   # POST_BUILD - Upload plan + log to S3, publish SNS result
-  # ---------------------------------------------------------------------------
+
   post_build:
     commands:
       - |
