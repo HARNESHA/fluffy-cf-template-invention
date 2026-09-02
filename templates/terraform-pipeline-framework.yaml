@@ -996,8 +996,8 @@ Resources:
                 - |
                   cd "${CODEBUILD_SRC_DIR}/work/repo"
                   RESOLVED_COMMIT_ID=$(git rev-parse HEAD)
-                  PLAN_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
-                  LOG_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/logs/${CODEBUILD_BUILD_ID}"
+                  PLAN_KEY="${ARTIFACT_PREFIX}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
+                  LOG_KEY="${ARTIFACT_PREFIX}/${ENVIRONMENT}/${BRANCH_NAME}/logs/${CODEBUILD_BUILD_ID}"
                   aws s3 cp "${CODEBUILD_SRC_DIR}/work/tfplan.binary" "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}/tfplan.binary" --sse aws:kms --no-progress
                   aws s3 cp "${CODEBUILD_SRC_DIR}/work/plan.txt" "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}/plan.txt" --sse aws:kms --no-progress
                   if [ -f "${CODEBUILD_SRC_DIR}/work/apply.txt" ]; then

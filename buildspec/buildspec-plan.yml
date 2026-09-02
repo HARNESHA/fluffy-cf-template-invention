@@ -48,7 +48,7 @@ phases:
         fi
         export RESOLVED_COMMIT_ID
         echo "Resolved commit: ${RESOLVED_COMMIT_ID}"
-      - export PLAN_ARTIFACT_KEY="${ARTIFACT_PREFIX}/${REPOSITORY_NAME}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
+      - export PLAN_ARTIFACT_KEY="${ARTIFACT_PREFIX}/${ENVIRONMENT}/${BRANCH_NAME}/plans/${RESOLVED_COMMIT_ID}"
       - export BUILD_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       - export AWS_REGION="${AWS_DEFAULT_REGION}"
       - 'echo "Project      : ${PROJECT_NAME}"'
